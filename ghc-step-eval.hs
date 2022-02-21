@@ -49,7 +49,7 @@ step x@(VarE _) _ = (x, False)
 step exp@(AppE exp1 exp2) d = 
   let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   if isVar hexp
-    then let decs = filterByName (name hexp) False d in
+    then let decs = filterByName (getName hexp) False d in
       processDecs exp exps decs
     else let (exp1', b) = step hexp d in
       (makeAppE (exp1' : exps), True)
@@ -68,29 +68,30 @@ step exp@(AppE exp1 exp2) d =
     isVar (VarE _) = True
     isVar _        = False
 
-    name :: Exp -> String
-    name (VarE (Name (OccName name) _)) = name
+    getName :: Exp -> String
+    getName (VarE (Name (OccName n) _)) = n
 
     processDecs :: Exp -> [Exp] -> [Dec] -> (Exp, Bool)
     processDecs origExp _    [] = (origExp, False)
-    processDecs origExp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where and body and clauses?
+    processDecs origExp exps (FunD n [] : decs) = processDecs origExp exps decs
+    processDecs origExp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where
       if length exps /= length pats then error "Wrong number of argumetns in function ..."
-      else let (b, m) = processPats exps pats in
+      else let (m, b) = processPats exps pats in
         if b
           then (replaceVars e m, True)
           else if null clauses
             then processDecs origExp exps decs
             else processDecs origExp exps ((FunD n clauses) : decs)
+    
+    processDecs origExp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = undefined -- TODO
 
-    processDecs origExp exps decs = error ("Number: " ++ show (length decs))
-
-    processPats :: [Exp] -> [Pat] -> (Bool, [(Name, Exp)])
+    processPats :: [Exp] -> [Pat] -> ([(Name, Exp)], Bool)
     processPats (e : exps) (p : pats) =
-      let (b1, m1) = checkPat p e in
-        if not b1 then (False, [])
-        else let (b2, m2) = processPats exps pats in
-          (b2, (if b2 then m1 else []) ++ m2)
-    processPats [] [] = (True, [])
+      let (m1, b1) = checkPat p e in
+        if not b1 then ([], False)
+        else let (m2, b2) = processPats exps pats in
+          ((if b2 then m1 else []) ++ m2, b2)
+    processPats [] [] = ([], True)
 
     processPats e p = error ("Number of arguments (" ++ show (length e) ++ ") and number of paterns (" ++ show (length p) ++ ") are not the same") -- TODO fix etareduction
           
@@ -108,24 +109,24 @@ filterByName n sign xs = filter theSameName xs
     theSameName (FunD (Name (OccName name) _) _) = n == name
     theSameName _                                = False
 
-checkPat :: Pat -> Exp -> (Bool, [(Name, Exp)])
-checkPat WildP _ = (True, [])
-checkPat (LitP lp) (LitE le) = (lp == le, [])
-checkPat (LitP lp) _         = (False, []) -- TODO fix to eval exp
-checkPat (VarP n)  exp       = (True, [(n, exp)])
+checkPat :: Pat -> Exp -> ([(Name, Exp)], Bool)
+checkPat WildP _ = ([], True)
+checkPat (LitP lp) (LitE le) = ([], lp == le)
+checkPat (LitP lp) _         = ([], False) -- TODO fix to eval exp
+checkPat (VarP n)  exp       = ([(n, exp)], True)
 checkPat (TupP ps) (TupE es) = undefined -- TODO make recursion
-checkPat (ConP np _ _) (ConE ne) = (np == ne, []) -- TODO add AppE
+checkPat (ConP np _ _) (ConE ne) = ([], np == ne) -- TODO add AppE
 checkPat (AsP n p) exp       = undefined -- TODO recursion
 checkPat (ParensP p) exp     = checkPat p exp
 checkPat (ListP ps) (ListE es) = undefined -- TODO
 checkPat (InfixP p1 np p2) (InfixE m1 exp m2) = undefined -- TODO
 checkPat (InfixP p1 (Name (OccName ":") _) p2) (ListE (x : xs)) = 
-  let (b1, x1) = checkPat p1 x in
-    if not b1 then (False, [])
-    else let (b2, x2) = checkPat p2 (ListE xs) in
-      if not b2 then (False, [])
-      else (True, x1 ++ x2)
-checkPat _ _ = (False, []) -- TODO
+  let (x1, b1) = checkPat p1 x in
+    if not b1 then ([], False)
+    else let (x2, b2) = checkPat p2 (ListE xs) in
+      if not b2 then ([], False)
+      else (x1 ++ x2, True)
+checkPat _ _ = ([], False) -- TODO
 
 replaceVars :: Exp -> [(Name, Exp)] -> Exp
 replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
