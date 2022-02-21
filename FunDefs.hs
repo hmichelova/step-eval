@@ -27,5 +27,9 @@ funcs = [d|
     then x : filter p xs
     else filter p xs
 
+  last :: [a] -> a
+  last [x] = x
+  last (x : xs) = last xs
+
   |]
 
