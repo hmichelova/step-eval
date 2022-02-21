@@ -63,39 +63,6 @@ step exp@(AppE exp1 exp2) d =
     makeAppE []  = error "Something went terribly wrong"
     makeAppE [x] = x
     makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
-
-    isVar :: Exp -> Bool
-    isVar (VarE _) = True
-    isVar _        = False
-
-    getName :: Exp -> String
-    getName (VarE (Name (OccName n) _)) = n
-
-    processDecs :: Exp -> [Exp] -> [Dec] -> (Exp, Bool)
-    processDecs origExp _    [] = (origExp, False)
-    processDecs origExp exps (FunD n [] : decs) = processDecs origExp exps decs
-    processDecs origExp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where
-      if length exps /= length pats then error "Wrong number of argumetns in function ..."
-      else let (m, b) = processPats exps pats in
-        if b
-          then (replaceVars e m, True)
-          else if null clauses
-            then processDecs origExp exps decs
-            else processDecs origExp exps ((FunD n clauses) : decs)
-    
-    processDecs origExp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = undefined -- TODO
-
-    processPats :: [Exp] -> [Pat] -> ([(Name, Exp)], Bool)
-    processPats (e : exps) (p : pats) =
-      let (m1, b1) = checkPat p e in
-        if not b1 then ([], False)
-        else let (m2, b2) = processPats exps pats in
-          ((if b2 then m1 else []) ++ m2, b2)
-    processPats [] [] = ([], True)
-
-    processPats e p = error ("Number of arguments (" ++ show (length e) ++ ") and number of paterns (" ++ show (length p) ++ ") are not the same") -- TODO fix etareduction
-          
-
 step (InfixE mexpr1 expr mexpr2) _ = undefined
 
 step exp _ = error ("Unsupported format of expression: " ++ pprint exp)
@@ -112,13 +79,43 @@ filterByName n sign xs = filter theSameName xs
 checkPat :: Pat -> Exp -> ([(Name, Exp)], Bool)
 checkPat WildP _ = ([], True)
 checkPat (LitP lp) (LitE le) = ([], lp == le)
-checkPat (LitP lp) _         = ([], False) -- TODO fix to eval exp
-checkPat (VarP n)  exp       = ([(n, exp)], True)
-checkPat (TupP ps) (TupE es) = undefined -- TODO make recursion
+checkPat p@(LitP lp) exp = {-let (e, b) = step exp decs in
+  if b
+    then checkPat p e
+    else -} ([], False) -- TODO fix
+checkPat (VarP n) exp       = ([(n, exp)], True)
+checkPat (TupP ps) (TupE es) = if length ps /= length es then ([], False)
+  else checkTups ps es
+  where
+    checkTups :: [Pat] -> [Maybe Exp] -> ([(Name, Exp)], Bool)
+    checkTups [] [] = ([], True)
+    checkTups (p : pats) (Just e : exps) = let (m, b) = checkPat p e in
+      if b 
+        then let (m2, b2) = checkTups pats exps in
+          if b2
+            then (m ++ m2, True)
+            else ([], False)
+        else ([], False)
+    checkTups (p : pats) (Nothing : exps) = checkTups pats exps -- TODO check
+    checkTups _ _ = error "Something went wrong in tuples check"
 checkPat (ConP np _ _) (ConE ne) = ([], np == ne) -- TODO add AppE
 checkPat (AsP n p) exp       = undefined -- TODO recursion
 checkPat (ParensP p) exp     = checkPat p exp
-checkPat (ListP ps) (ListE es) = undefined -- TODO
+checkPat (ListP ps) (ListE es) = if length ps /= length es then ([], False)
+  else checkLists ps es
+  where
+    checkLists :: [Pat] -> [Exp] -> ([(Name, Exp)], Bool)
+    checkLists [] [] = ([], True)
+    checkLists (p : pats) (e : exps) = let (m, b) = checkPat p e in
+      if b 
+        then let (m2, b2) = checkLists pats exps in
+          if b2
+            then (m ++ m2, True)
+            else ([], False)
+        else ([], False)
+    checkLists _ _ = error "Something went wrong in lists check"
+checkPat (ListP ps) (CompE stmts) = undefined -- TODO
+checkPat (ListP ps) (ArithSeqE range) = undefined -- TODO
 checkPat (InfixP p1 np p2) (InfixE m1 exp m2) = undefined -- TODO
 checkPat (InfixP p1 (Name (OccName ":") _) p2) (ListE (x : xs)) = 
   let (x1, b1) = checkPat p1 x in
@@ -142,6 +139,40 @@ replaceVar (ParensE exp) s e = ParensE (replaceVar exp s e)
 replaceVar (LamE pats exp) s e = undefined -- TODO
 replaceVar exp _ _ = exp -- TODO
 
+isVar :: Exp -> Bool
+isVar (VarE _) = True
+isVar _        = False
+
+getName :: Exp -> String
+getName (VarE (Name (OccName n) _)) = n
+getName _ = error "Given expression is not variable expression"
+
+processDecs :: Exp -> [Exp] -> [Dec] -> (Exp, Bool)
+processDecs origExp _    [] = (origExp, False)
+processDecs origExp exps (FunD n [] : decs) = processDecs origExp exps decs
+processDecs origExp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where
+  if length exps /= length pats
+    then error "Wrong number of argumetns in function ..."
+    else let (m, b) = processPats exps pats in
+      if b
+        then (replaceVars e m, True)
+        else processDecs origExp exps ((FunD n clauses) : decs)
+
+processDecs origExp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = undefined -- TODO
+
+processPats :: [Exp] -> [Pat] -> ([(Name, Exp)], Bool)
+processPats (e : exps) (p : pats) =
+  let (m1, b1) = checkPat p e in
+    if not b1 then ([], False)
+    else let (m2, b2) = processPats exps pats in
+      ((if b2 then m1 else []) ++ m2, b2)
+processPats [] [] = ([], True)
+processPats [] p = 
+  error ("Number of arguments (0) and " ++
+         "number of paterns (" ++ show (length p) ++ ") are not the same")
+processPats e p =
+  error ("Number of arguments (" ++ show (length e) ++ ") and " ++
+         "number of paterns (" ++ show (length p) ++ ") are not the same") -- TODO fix etared
 
 myTry = do
   e <- runQ myExprMap
@@ -150,5 +181,8 @@ myTry = do
   let (e1, b) = step e d
   putStrLn $ show b
   putStrLn $ pprint e1
+  let (e2, b2) = step e1 d
+  putStrLn $ show b2
+  putStrLn $ pprint e2
 
 
