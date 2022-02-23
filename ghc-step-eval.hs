@@ -43,29 +43,49 @@ myExprLambda = [| \x y ->  y : x |]
 myExpr :: Q Exp
 myExpr = [| (1 + 2) == (5 * 3) && (7 - 8) < 42 |]
 
-step :: Exp -> [Dec] -> (Exp, Bool)
-step x@(LitE _) _ = (x, False)
-step x@(VarE _) _ = (x, False)
+data EitherNone a = Exception String
+                  | None
+                  | Value a
+                    deriving (Eq, Show)
+
+instance Functor EitherNone where
+  fmap _ (Exception e) = Exception e
+  fmap _ None          = None
+  fmap f (Value a)     = Value $ f a
+
+instance Applicative EitherNone where
+  pure = Value
+  Exception e <*> _ = Exception e
+  None        <*> _ = None
+  Value f     <*> r = fmap f r
+
+instance Monad EitherNone where
+  Exception e >>= _ = Exception e
+  None        >>= _ = None
+  Value v     >>= f = f v
+
+step :: Exp -> [Dec] -> EitherNone Exp
+step x@(LitE _) _ = None
+step x@(VarE _) _ = None
 step exp@(AppE exp1 exp2) d = 
   let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   if isVar hexp
     then let decs = filterByName (getName hexp) False d in
-      processDecs exp exps decs
-    else let (exp1', b) = step hexp d in
-      (makeAppE (exp1' : exps), True)
+      processDecs exps decs
+    else step hexp d >>= \exp1' -> makeAppE (exp1' : exps)
 
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
 
-    makeAppE :: [Exp] -> Exp
-    makeAppE []  = error "Something went terribly wrong"
-    makeAppE [x] = x
+    makeAppE :: [Exp] -> EitherNone Exp
+    makeAppE []  = Exception "Something went terribly wrong"
+    makeAppE [x] = Value x
     makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
-step (InfixE mexpr1 expr mexpr2) _ = undefined
+step (InfixE mexpr1 expr mexpr2) _ = undefined -- TODO
 
-step exp _ = error ("Unsupported format of expression: " ++ pprint exp)
+step exp _ = Exception ("Unsupported format of expression: " ++ pprint exp)
 
 
 filterByName :: String -> Bool -> [Dec] -> [Dec]
@@ -76,54 +96,43 @@ filterByName n sign xs = filter theSameName xs
     theSameName (FunD (Name (OccName name) _) _) = n == name
     theSameName _                                = False
 
-checkPat :: Pat -> Exp -> ([(Name, Exp)], Bool)
-checkPat WildP _ = ([], True)
-checkPat (LitP lp) (LitE le) = ([], lp == le)
+checkPat :: Pat -> Exp -> EitherNone [(Name, Exp)]
+checkPat WildP _ = Value []
+checkPat (LitP lp) (LitE le) = if lp == le then Value [] else None
 checkPat p@(LitP lp) exp = {-let (e, b) = step exp decs in
   if b
     then checkPat p e
-    else -} ([], False) -- TODO fix
-checkPat (VarP n) exp       = ([(n, exp)], True)
-checkPat (TupP ps) (TupE es) = if length ps /= length es then ([], False)
+    else -} None -- TODO fix
+checkPat (VarP n) exp       = Value [(n, exp)]
+checkPat (TupP ps) (TupE es) = if length ps /= length es then None
   else checkTups ps es
   where
-    checkTups :: [Pat] -> [Maybe Exp] -> ([(Name, Exp)], Bool)
-    checkTups [] [] = ([], True)
-    checkTups (p : pats) (Just e : exps) = let (m, b) = checkPat p e in
-      if b 
-        then let (m2, b2) = checkTups pats exps in
-          if b2
-            then (m ++ m2, True)
-            else ([], False)
-        else ([], False)
+    checkTups :: [Pat] -> [Maybe Exp] -> EitherNone [(Name, Exp)]
+    checkTups [] [] = Value []
+    checkTups (p : pats) (Just e : exps) = checkPat p e >>=
+      \m1 -> checkTups pats exps >>=
+      \m2 -> Value (m1 ++ m2)
     checkTups (p : pats) (Nothing : exps) = checkTups pats exps -- TODO check
-    checkTups _ _ = error "Something went wrong in tuples check"
-checkPat (ConP np _ _) (ConE ne) = ([], np == ne) -- TODO add AppE
+    checkTups _ _ = Exception "Something went wrong in tuples check"
+checkPat (ConP np _ _) (ConE ne) = if np == ne then Value [] else None -- TODO add AppE
 checkPat (AsP n p) exp       = undefined -- TODO recursion
 checkPat (ParensP p) exp     = checkPat p exp
-checkPat (ListP ps) (ListE es) = if length ps /= length es then ([], False)
+checkPat (ListP ps) (ListE es) = if length ps /= length es then None
   else checkLists ps es
   where
-    checkLists :: [Pat] -> [Exp] -> ([(Name, Exp)], Bool)
-    checkLists [] [] = ([], True)
-    checkLists (p : pats) (e : exps) = let (m, b) = checkPat p e in
-      if b 
-        then let (m2, b2) = checkLists pats exps in
-          if b2
-            then (m ++ m2, True)
-            else ([], False)
-        else ([], False)
-    checkLists _ _ = error "Something went wrong in lists check"
+    checkLists :: [Pat] -> [Exp] -> EitherNone [(Name, Exp)]
+    checkLists [] [] = Value []
+    checkLists (p : pats) (e : exps) = checkPat p e >>=
+      \m1 -> checkLists pats exps >>=
+      \m2 -> Value (m1 ++ m2)
+    checkLists _ _ = Exception "Something went wrong in lists check"
 checkPat (ListP ps) (CompE stmts) = undefined -- TODO
 checkPat (ListP ps) (ArithSeqE range) = undefined -- TODO
 checkPat (InfixP p1 np p2) (InfixE m1 exp m2) = undefined -- TODO
-checkPat (InfixP p1 (Name (OccName ":") _) p2) (ListE (x : xs)) = 
-  let (x1, b1) = checkPat p1 x in
-    if not b1 then ([], False)
-    else let (x2, b2) = checkPat p2 (ListE xs) in
-      if not b2 then ([], False)
-      else (x1 ++ x2, True)
-checkPat _ _ = ([], False) -- TODO
+checkPat (InfixP p1 (Name (OccName ":") _) p2) (ListE (x : xs)) = checkPat p1 x >>= -- TODO rewrite - skip step
+  \x1 -> checkPat p2 (ListE xs) >>=
+  \x2 -> Value (x1 ++ x2)
+checkPat _ _ = None -- TODO
 
 replaceVars :: Exp -> [(Name, Exp)] -> Exp
 replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
@@ -147,42 +156,47 @@ getName :: Exp -> String
 getName (VarE (Name (OccName n) _)) = n
 getName _ = error "Given expression is not variable expression"
 
-processDecs :: Exp -> [Exp] -> [Dec] -> (Exp, Bool)
-processDecs origExp _    [] = (origExp, False)
-processDecs origExp exps (FunD n [] : decs) = processDecs origExp exps decs
-processDecs origExp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where
+processDecs :: [Exp] -> [Dec] -> EitherNone Exp
+processDecs _    [] = None
+processDecs exps (FunD n [] : decs) = processDecs exps decs
+processDecs exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = -- TODO fix where
   if length exps /= length pats
-    then error "Wrong number of argumetns in function ..."
-    else let (m, b) = processPats exps pats in
-      if b
-        then (replaceVars e m, True)
-        else processDecs origExp exps ((FunD n clauses) : decs)
+    then Exception "Wrong number of argumetns in function ..."
+    else replaceOrContinue $ processPats exps pats
+  where
+    replaceOrContinue :: EitherNone [(Name, Exp)] -> EitherNone Exp
+    replaceOrContinue (Exception e) = Exception e
+    replaceOrContinue None = processDecs exps ((FunD n clauses) : decs)
+    replaceOrContinue (Value m) = Value (replaceVars e m)
 
-processDecs origExp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = undefined -- TODO
+processDecs exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = undefined -- TODO
 
-processPats :: [Exp] -> [Pat] -> ([(Name, Exp)], Bool)
-processPats (e : exps) (p : pats) =
-  let (m1, b1) = checkPat p e in
-    if not b1 then ([], False)
-    else let (m2, b2) = processPats exps pats in
-      ((if b2 then m1 else []) ++ m2, b2)
-processPats [] [] = ([], True)
+processPats :: [Exp] -> [Pat] -> EitherNone [(Name, Exp)]
+processPats (e : exps) (p : pats) = checkPat p e >>=
+  \m1 -> processPats exps pats >>=
+  \m2 -> Value (m1 ++ m2)
+processPats [] [] = Value []
 processPats [] p = 
-  error ("Number of arguments (0) and " ++
-         "number of paterns (" ++ show (length p) ++ ") are not the same")
+  Exception ("Number of arguments (0) and " ++
+             "number of paterns (" ++ show (length p) ++ ") are not the same")
 processPats e p =
-  error ("Number of arguments (" ++ show (length e) ++ ") and " ++
-         "number of paterns (" ++ show (length p) ++ ") are not the same") -- TODO fix etared
+  Exception ("Number of arguments (" ++ show (length e) ++ ") and " ++
+             "number of paterns (" ++ show (length p) ++ ") are not the same") -- TODO fix etared
 
+myTry :: IO ()
 myTry = do
   e <- runQ myExprMap
   d <- runQ funcs
   putStrLn $ pprint e
-  let (e1, b) = step e d
-  putStrLn $ show b
-  putStrLn $ pprint e1
-  let (e2, b2) = step e1 d
-  putStrLn $ show b2
-  putStrLn $ pprint e2
+  let mee1 = step e d
+  niceOutputPrint mee1
+  {-mee1 >>= \e1 ->
+    let mee2 = step e1 d in niceOutputPrint mee2-}
+
+  where
+    niceOutputPrint :: EitherNone Exp -> IO ()
+    niceOutputPrint (Exception e) = fail e
+    niceOutputPrint None = putStrLn "Return value is none"
+    niceOutputPrint (Value e) = putStrLn $ pprint e
 
 
