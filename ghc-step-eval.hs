@@ -4,6 +4,7 @@ module Ghc_step_eval where
 import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
+import Data.Maybe ( isNothing )
 import Prelude hiding ( map, filter, id, take, const, last )
 
 import FunDefs
@@ -64,45 +65,93 @@ instance Monad EitherNone where
   None        >>= _ = None
   Value v     >>= f = f v
 
-step :: Exp -> [Dec] -> EitherNone Exp
-step x@(LitE _) _ = None
-step x@(VarE _) _ = None
-step exp@(AppE exp1 exp2) d = 
-  let (hexp : exps) = getSubExp exp1 ++ [exp2] in
-  if isVar hexp
-    then let decs = filterByName (getName hexp) False d in
-      let exps' = expsToWHNF exps in
-      if all isNone exps'
-        then processDecs exps decs
-        else makeAppE (hexp : replaceAtIndex (length exps' - 1) (last exps') exps)
-    else step hexp d >>= \exp1' -> makeAppE (exp1' : exps)
+isNone :: EitherNone Exp -> Bool
+isNone None = True
+isNone _    = False
 
+fromValue :: EitherNone Exp -> Exp
+fromValue (Value exp) = exp
+fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
+
+step :: Exp -> [Dec] -> EitherNone Exp
+step (LitE _) _ = None
+step (VarE _) _ = None -- TODO check if it is possible to rewrite
+step (ConE _) _ = None
+step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
+  applyExp hexp exps
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
+
+    applyExp :: Exp -> [Exp] -> EitherNone Exp
+    applyExp hexp@(VarE x) exps = let decs = filterByName (getName hexp) False d in
+      let exps' = expsToWHNF exps in
+        if all isNone exps'
+          then processDecs exps decs
+          else makeAppE (hexp : replaceAtIndex (length exps' - 1) (last exps') exps)
+    applyExp e@(InfixE _ _ _) [] = Exception ("Function application `" ++ show (pprint e) ++ "` has no arguments")
+    applyExp ie@(InfixE me1 exp me2) (e : exps) = let enexp' = step exp d in
+      case enexp' of
+        Exception e -> Exception e
+        None -> substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
+        Value exp' -> makeAppE (exp' : makeListArgsInfixE me1 me2 e ++ exps)
+      where
+        substituteNothingInInfixE :: Exp -> Exp -> EitherNone Exp
+        substituteNothingInInfixE ie@(InfixE me1 exp me2) e
+          | isNothing me1 = Value $ InfixE (Just e) exp me2
+          | isNothing me2 = Value $ InfixE me1 exp (Just e)
+          | otherwise     = Exception ("Infix expression `" ++ show (pprint ie) ++ "` have all arguments - application is not allowed")
+
+        makeListArgsInfixE :: Maybe Exp -> Maybe Exp -> Exp -> [Exp]
+        makeListArgsInfixE Nothing Nothing e = [e]
+        makeListArgsInfixE Nothing (Just e2) e = [e, e2]
+        makeListArgsInfixE (Just e1) Nothing e = [e1, e]
+        makeListArgsInfixE (Just e1) (Just e2) e = [e1, e2, e]
+
+    applyExp hexp exps = step hexp d >>= \exp1' -> makeAppE (exp1' : exps)
 
     makeAppE :: [Exp] -> EitherNone Exp
     makeAppE []  = Exception "Something went terribly wrong"
     makeAppE [x] = Value x
     makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
-    expsToWHNF :: [Exp] -> [EitherNone Exp] -- ak sa nieco zmeni tak chcem sa uplne vratit.. ak nic tak chcem robit processDecs
-
+    expsToWHNF :: [Exp] -> [EitherNone Exp]
     expsToWHNF [] = []
     expsToWHNF (x : xs) = let x' = toWHNF x in
       if isNone x'
         then None : expsToWHNF xs
         else [x']
 
-    isNone :: EitherNone Exp -> Bool
-    isNone None = True
-    isNone _    = False
-
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
- 
-step (InfixE mexpr1 expr mexpr2) _ = undefined -- TODO
+
+step ie@(InfixE me1 exp me2) d = let enexp' = step exp d in
+  case enexp' of
+    Exception e -> Exception e
+    None -> let eie1' = stepMaybe me1 d in
+      case eie1' of
+        Exception e -> Exception e
+        None -> let eie2' = stepMaybe me2 d in
+          case eie2' of
+            Exception e -> Exception e
+            None -> let val = LitE (IntegerL 42) in -- TODO fix with interpreter
+                Value $ val
+            Value e2' -> Value $ InfixE me1 exp (Just e2')
+        Value e1' -> Value $ InfixE (Just e1') exp me2
+    Value exp' -> Value $ InfixE me1 exp' me2 -- TODO fix?
+  where
+    stepMaybe :: Maybe Exp -> [Dec] -> EitherNone Exp
+    stepMaybe Nothing _ = None
+    stepMaybe (Just e) d = step e d
+
+step (CondE b t f) d = let b' = step b d in
+  case b' of
+    Exception e -> Exception e
+    None -> case b of
+      ConE (Name (OccName n) _) -> if n == "True" then Value $ t else Value $ f
+      otherwise -> Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
+    Value v -> Value $ CondE v t f
 
 step exp _ = Exception ("Unsupported format of expression: " ++ pprint exp)
 
@@ -226,5 +275,6 @@ myTry qexp qdec = do
         niceOutputPrint ene
         let ene1 = step e d
         nextStep ene1 d
-    nextStep None _ = putStrLn "No next stops"
+    nextStep None _ = putStrLn "No next steps"
+    nextStep (Exception e) _ = fail e
 
