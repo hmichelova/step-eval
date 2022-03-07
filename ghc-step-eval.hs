@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
 module Ghc_step_eval where
 
 import Control.Monad
@@ -6,6 +6,8 @@ import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing )
 import Prelude hiding ( map, filter, id, take, const, last )
+import Data.Text (pack, unpack, replace)
+import Language.Haskell.Interpreter
 
 import FunDefs
 
@@ -28,6 +30,9 @@ tree42 = Node 42 Empty Empty
 
 myExprTree :: Q Exp
 myExprTree = [| emptyTree |]
+
+myEmpty :: Q Exp
+myEmpty = [| Empty |]
 
 myExprTreeEq :: Q Exp
 myExprTreeEq = [| emptyTree == tree42 |]
@@ -65,6 +70,32 @@ instance Monad EitherNone where
   None        >>= _ = None
   Value v     >>= f = f v
 
+type IOEitherNone a = IO (EitherNone a)
+
+evalInterpreter :: Exp -> IOEitherNone Exp
+evalInterpreter e = do
+  liftIO $ putStrLn $ "interpreter #1: " ++ pprint e
+  r <- runInterpreter $ doInterpret $ replaces $ pprint e
+  case r of
+    Left err -> pure $ Exception $ show err
+    Right qe -> do
+      e' <- runQ qe
+      pure $ Value e'
+  where
+    doInterpret s = do
+      setImports moduleList
+      liftIO $ putStrLn $ "intepreter: " ++ s
+      t <- typeOf s
+      liftIO $ putStrLn $ t
+      r <- interpret s (as :: Integer) -- TODO
+      pure $ [| r |]
+
+    moduleList :: [ModuleName]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types"]
+
+    replaces :: String -> String
+    replaces = unpack . replace "GHC.Types." "" . pack
+
 isNone :: EitherNone Exp -> Bool
 isNone None = True
 isNone _    = False
@@ -73,10 +104,10 @@ fromValue :: EitherNone Exp -> Exp
 fromValue (Value exp) = exp
 fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
 
-step :: Exp -> [Dec] -> EitherNone Exp
-step (LitE _) _ = None
-step (VarE _) _ = None -- TODO check if it is possible to rewrite
-step (ConE _) _ = None
+step :: Exp -> [Dec] -> IOEitherNone Exp
+step (LitE _) _ = pure None
+step (VarE _) _ = pure None -- TODO check if it is possible to rewrite
+step (ConE _) _ = pure None
 step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   applyExp hexp exps
   where
@@ -84,18 +115,19 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
 
-    applyExp :: Exp -> [Exp] -> EitherNone Exp
+    applyExp :: Exp -> [Exp] -> IOEitherNone Exp
     applyExp hexp@(VarE x) exps = let decs = filterByName (getName hexp) False d in
       let exps' = expsToWHNF exps in
         if all isNone exps'
-          then processDecs exps decs
-          else makeAppE (hexp : replaceAtIndex (length exps' - 1) (last exps') exps)
-    applyExp e@(InfixE _ _ _) [] = Exception ("Function application `" ++ show (pprint e) ++ "` has no arguments")
-    applyExp ie@(InfixE me1 exp me2) (e : exps) = let enexp' = step exp d in
+          then pure $ processDecs exps decs
+          else pure $ makeAppE (hexp : replaceAtIndex (length exps' - 1) (last exps') exps)
+    applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
+    applyExp ie@(InfixE me1 exp me2) (e : exps) = do
+      enexp' <- step exp d
       case enexp' of
-        Exception e -> Exception e
-        None -> substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
-        Value exp' -> makeAppE (exp' : makeListArgsInfixE me1 me2 e ++ exps)
+        Exception e -> pure $ Exception e
+        None -> pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
+        Value exp' -> pure $ makeAppE (exp' : makeListArgsInfixE me1 me2 e ++ exps)
       where
         substituteNothingInInfixE :: Exp -> Exp -> EitherNone Exp
         substituteNothingInInfixE ie@(InfixE me1 exp me2) e
@@ -109,7 +141,11 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         makeListArgsInfixE (Just e1) Nothing e = [e1, e]
         makeListArgsInfixE (Just e1) (Just e2) e = [e1, e2, e]
 
-    applyExp hexp exps = step hexp d >>= \exp1' -> makeAppE (exp1' : exps)
+    applyExp hexp exps = do
+      nexp1' <- step hexp d
+      case nexp1' of
+        Value exp1' -> pure $ makeAppE (exp1' : exps)
+        x           -> pure x
 
     makeAppE :: [Exp] -> EitherNone Exp
     makeAppE []  = Exception "Something went terribly wrong"
@@ -126,35 +162,37 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
-step ie@(InfixE me1 exp me2) d = let enexp' = step exp d in
+step ie@(InfixE me1 exp me2) d = do
+  enexp' <- step exp d
   case enexp' of
-    Exception e -> Exception e
-    None -> let eie1' = stepMaybe me1 d in
+    Exception e -> pure $ Exception e
+    None -> do
+      eie1' <- stepMaybe me1 d
       case eie1' of
-        Exception e -> Exception e
-        None -> let eie2' = stepMaybe me2 d in
+        Exception e -> pure $ Exception e
+        None -> do
+          eie2' <- stepMaybe me2 d
           case eie2' of
-            Exception e -> Exception e
-            None -> let val = LitE (IntegerL 42) in -- TODO fix with interpreter
-                Value $ val
-            Value e2' -> Value $ InfixE me1 exp (Just e2')
-        Value e1' -> Value $ InfixE (Just e1') exp me2
-    Value exp' -> Value $ InfixE me1 exp' me2 -- TODO fix?
+            Exception e -> pure $ Exception e
+            None -> evalInterpreter ie
+            Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
+        Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
+    Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
   where
-    stepMaybe :: Maybe Exp -> [Dec] -> EitherNone Exp
-    stepMaybe Nothing _ = None
+    stepMaybe :: Maybe Exp -> [Dec] -> IOEitherNone Exp
+    stepMaybe Nothing _ = pure $ None
     stepMaybe (Just e) d = step e d
 
-step (CondE b t f) d = let b' = step b d in
+step (CondE b t f) d = do
+  b' <- step b d
   case b' of
-    Exception e -> Exception e
+    Exception e -> pure $ Exception e
     None -> case b of
-      ConE (Name (OccName n) _) -> if n == "True" then Value $ t else Value $ f
-      otherwise -> Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
-    Value v -> Value $ CondE v t f
+      ConE (Name (OccName n) _) -> pure $ if n == "True" then Value $ t else Value $ f
+      otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
+    Value v -> pure $ Value $ CondE v t f
 
-step exp _ = Exception ("Unsupported format of expression: " ++ pprint exp)
-
+step exp _ = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
 filterByName :: String -> Bool -> [Dec] -> [Dec]
 filterByName n sign xs = filter theSameName xs
@@ -273,7 +311,7 @@ myTry qexp qdec = do
     nextStep :: EitherNone Exp -> [Dec] -> IO ()
     nextStep ene@(Value e) d = do
         niceOutputPrint ene
-        let ene1 = step e d
+        ene1 <- step e d
         nextStep ene1 d
     nextStep None _ = putStrLn "No next steps"
     nextStep (Exception e) _ = fail e
