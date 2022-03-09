@@ -8,6 +8,8 @@ import Data.Maybe ( isNothing )
 import Prelude hiding ( map, filter, id, take, const, last )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
+import qualified Data.Map as M
+import qualified Control.Monad.Trans.State.Lazy as S
 
 import FunDefs
 
@@ -72,9 +74,10 @@ instance Monad EitherNone where
 
 type IOEitherNone a = IO (EitherNone a)
 
+type Env a = M.Map Name a
+
 evalInterpreter :: Exp -> IOEitherNone Exp
 evalInterpreter e = do
-  liftIO $ putStrLn $ "interpreter #1: " ++ pprint e
   r <- runInterpreter $ doInterpret $ replaces $ pprint e
   case r of
     Left err -> pure $ Exception $ show err
@@ -84,9 +87,6 @@ evalInterpreter e = do
   where
     doInterpret s = do
       setImports moduleList
-      liftIO $ putStrLn $ "intepreter: " ++ s
-      t <- typeOf s
-      liftIO $ putStrLn $ t
       r <- interpret s (as :: Integer) -- TODO
       pure $ [| r |]
 
@@ -104,9 +104,20 @@ fromValue :: EitherNone Exp -> Exp
 fromValue (Value exp) = exp
 fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
 
-step :: Exp -> [Dec] -> IOEitherNone Exp
+step :: Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
 step (LitE _) _ = pure None
-step (VarE _) _ = pure None -- TODO check if it is possible to rewrite
+step (VarE x) d = do
+  env <- S.get
+  case M.lookup x env of
+    Just exp -> do
+      exp' <- step exp d
+      case exp' of
+        Exception e -> pure $ Exception e
+        None -> pure None
+        Value v -> do
+          S.put $ M.adjust (\_ -> v) x env
+          pure $ Value $ (VarE x)
+    Nothing -> pure None -- TODO no value is ok?
 step (ConE _) _ = pure None
 step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   applyExp hexp exps
@@ -115,7 +126,7 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
 
-    applyExp :: Exp -> [Exp] -> IOEitherNone Exp
+    applyExp :: Exp -> [Exp] -> S.StateT (Env Exp) IO (EitherNone Exp)
     applyExp hexp@(VarE x) exps = let decs = filterByName (getName hexp) False d in
       let exps' = expsToWHNF exps in
         if all isNone exps'
@@ -174,12 +185,12 @@ step ie@(InfixE me1 exp me2) d = do
           eie2' <- stepMaybe me2 d
           case eie2' of
             Exception e -> pure $ Exception e
-            None -> evalInterpreter ie
+            None -> liftIO $ evalInterpreter ie
             Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
     Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
   where
-    stepMaybe :: Maybe Exp -> [Dec] -> IOEitherNone Exp
+    stepMaybe :: Maybe Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
     stepMaybe Nothing _ = pure $ None
     stepMaybe (Just e) d = step e d
 
@@ -301,18 +312,26 @@ myTry :: Q Exp -> Q [Dec] -> IO ()
 myTry qexp qdec = do
   e <- runQ qexp
   d <- runQ qdec
-  nextStep (Value e) d
+  process e d
+  --nextStep (Value e) d
   where
-    niceOutputPrint :: EitherNone Exp -> IO ()
-    niceOutputPrint (Exception e) = fail e
-    niceOutputPrint None = putStrLn "Return value is none"
-    niceOutputPrint (Value e) = putStrLn $ pprint e
+    process :: Exp -> [Dec] -> IO ()
+    process e d = do
+      S.runStateT (nextStep (Value e) d) M.empty
+      return ()
 
-    nextStep :: EitherNone Exp -> [Dec] -> IO ()
+    niceOutputPrint :: EitherNone Exp -> S.StateT (Env Exp) IO ()
+    niceOutputPrint (Exception e) = fail e
+    niceOutputPrint None = liftIO $ putStrLn "Return value is none"
+    niceOutputPrint (Value e) = liftIO $ putStrLn $ pprint e
+
+    nextStep :: EitherNone Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
     nextStep ene@(Value e) d = do
-        niceOutputPrint ene
-        ene1 <- step e d
-        nextStep ene1 d
-    nextStep None _ = putStrLn "No next steps"
+      x <- niceOutputPrint ene
+      ene1 <- step e d
+      nextStep ene1 d
+    nextStep None _ = do
+      liftIO $ putStrLn "No next steps"
+      pure None
     nextStep (Exception e) _ = fail e
 
