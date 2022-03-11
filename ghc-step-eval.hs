@@ -5,7 +5,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Prelude hiding ( map, filter, id, take, const, last )
+import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Data.Map as M
@@ -91,7 +91,7 @@ evalInterpreter e = do
       pure $ [| r |]
 
     moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types"]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes"]
 
     replaces :: String -> String
     replaces = unpack . replace "GHC.Types." "" . pack
@@ -316,6 +316,8 @@ replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
 
 replaceVar :: Exp -> String -> Exp -> Exp
 replaceVar exp@(VarE (Name (OccName n) _)) s e = if n == s then e else exp
+replaceVar exp@(ConE _) _ _ = exp
+replaceVar exp@(LitE _) _ _ = exp
 replaceVar (AppE e1 e2) s e = AppE (replaceVar e1 s e) (replaceVar e2 s e)
 replaceVar (InfixE me1 exp me2) s e =
   InfixE (maybe Nothing (\e1 -> Just (replaceVar e1 s e)) me1)
@@ -323,6 +325,9 @@ replaceVar (InfixE me1 exp me2) s e =
          (maybe Nothing (\e2 -> Just (replaceVar e2 s e)) me2)
 replaceVar (ParensE exp) s e = ParensE (replaceVar exp s e)
 replaceVar (LamE pats exp) s e = undefined -- TODO
+replaceVar (TupE mexps) s e = TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' s e))) mexps
+replaceVar (CondE b t f) s e = CondE (replaceVar b s e) (replaceVar t s e) (replaceVar f s e)
+replaceVar (ListE xs) s e = ListE $ map (\exp -> replaceVar exp s e) xs
 replaceVar exp _ _ = exp -- TODO
 
 isVar :: Exp -> Bool
@@ -417,5 +422,5 @@ evaluateExp qexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num." ] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes."] . pack
 

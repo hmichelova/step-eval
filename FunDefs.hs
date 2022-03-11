@@ -31,5 +31,31 @@ funcs = [d|
   last [x] = x
   last (x : xs) = last xs
 
+  length :: [a] -> Int
+  length [] = 0
+  length (_ : xs) = 1 + length xs
+
+  fst :: (a, b) -> a
+  fst (x, _) = x
+
+  snd :: (a, b) -> b
+  snd (_, x) = x
+
+  zip :: [a] -> [b] -> [(a, b)]
+  zip [] _ = []
+  zip _ [] = []
+  zip (x : xs) (y : ys) = (x, y) : zip xs ys
+
+  zipWith' :: (a -> b -> c) -> [a] -> [b] -> [c]
+  zipWith' f = go
+    where
+      go [] _ = []
+      go _ [] = []
+      go (x : xs) (y : ys) = f x y : go xs ys
+
+  zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
+  zipWith f (x : xs) (y : ys) = f x y : zipWith f xs ys
+  zipWith _ _        _        = []
+
   |]
 
