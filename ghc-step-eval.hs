@@ -1,6 +1,9 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
 module Ghc_step_eval where
 
+import FunDefs
+import DataTypes
+
 import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -11,70 +14,7 @@ import Language.Haskell.Interpreter
 import qualified Data.Map as M
 import qualified Control.Monad.Trans.State.Lazy as S
 
-import FunDefs
-
 $funcs
-
-data BinTree a = Empty
-               | Node a (BinTree a) (BinTree a)
-                 deriving (Show)
-
-instance Eq a => Eq (BinTree a) where
-  Empty           == Empty           = True
-  (Node v1 l1 r1) == (Node v2 l2 r2) = v1 == v2 && l1 == l2 && r1 == r2
-  _               == _               = False
-
-emptyTree :: BinTree Int
-emptyTree = Empty
-
-tree42 :: BinTree Int
-tree42 = Node 42 Empty Empty
-
-myExprTree :: Q Exp
-myExprTree = [| emptyTree |]
-
-myEmpty :: Q Exp
-myEmpty = [| Empty |]
-
-myExprTreeEq :: Q Exp
-myExprTreeEq = [| emptyTree == tree42 |]
-
-myExprMap :: Q Exp
-myExprMap = [| map (+ 2) [1, 2] |]
-
-myExprId :: Q Exp
-myExprId = [| id 5 |]
-
-myExprLambda :: Q Exp
-myExprLambda = [| \x y ->  y : x |]
-
-myExpr :: Q Exp
-myExpr = [| (1 + 2) == (5 * 3) && (7 - 8) < 42 |]
-
-data EitherNone a = Exception String
-                  | None
-                  | Value a
-                    deriving (Eq, Show)
-
-instance Functor EitherNone where
-  fmap _ (Exception e) = Exception e
-  fmap _ None          = None
-  fmap f (Value a)     = Value $ f a
-
-instance Applicative EitherNone where
-  pure = Value
-  Exception e <*> _ = Exception e
-  None        <*> _ = None
-  Value f     <*> r = fmap f r
-
-instance Monad EitherNone where
-  Exception e >>= _ = Exception e
-  None        >>= _ = None
-  Value v     >>= f = f v
-
-type IOEitherNone a = IO (EitherNone a)
-
-type Env a = M.Map Name a
 
 evalInterpreter :: Exp -> IOEitherNone Exp
 evalInterpreter e = do
@@ -458,7 +398,7 @@ evaluateExp qexp qdec = do
       ene1 <- step e d
       nextStep ene1 d
     nextStep None _ = do
-      liftIO $ putStrLn "No next steps"
+      liftIO $ putStrLn "Done"
       pure None
     nextStep (Exception e) _ = fail e
 
