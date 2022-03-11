@@ -105,8 +105,6 @@ fromValue (Value exp) = exp
 fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
 
 step :: Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-step (LitE _) _ = do
-  pure None
 step (VarE x) d = do
   env <- S.get
   case M.lookup x env of
@@ -119,7 +117,11 @@ step (VarE x) d = do
           S.put $ M.insert x v env
           pure $ Value $ (VarE x)
     Nothing -> pure None -- TODO no value is ok?
+
 step (ConE _) _ = pure None
+
+step (LitE _) _ = pure None
+
 step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   appExp hexp exps
   where
@@ -205,10 +207,27 @@ step ie@(InfixE me1 exp me2) d = do
             Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
     Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
-  where
-    stepMaybe :: Maybe Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-    stepMaybe Nothing _ = pure $ None
-    stepMaybe (Just e) d = step e d
+
+step (ParensE e) d = do
+  e' <- step e d
+  case e' of
+    Value v -> pure $ Value $ ParensE v
+    x -> pure x
+
+step (LamE pats exp) d = pure $ Exception "Lambda expressions are not supported yet"
+
+step (TupE []) d = pure None
+step exp@(TupE (me : exps)) d = do
+  e' <- stepMaybe me d
+  case e' of
+    None -> do
+      exps' <- step (TupE exps) d
+      case exps' of
+        Value (TupE xs) -> pure $ Value $ TupE $ me : xs
+        Value _ -> pure $ Exception $ "Unsupported change of structure in tupple expression " ++ pprint exp
+        x -> pure x
+    Value v -> pure $ Value $ TupE $ (Just v) : exps
+    x -> pure x
 
 step (CondE b t f) d = do
   b' <- step b d
@@ -219,9 +238,27 @@ step (CondE b t f) d = do
       otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
     Value v -> pure $ Value $ CondE v t f
 
-step (UnboundVarE n) _ = undefined
+step (LetE decs exp) d = pure $ Exception "Let expressions are not supported yet"
+
+step (ListE []) d = pure None
+step exp@(ListE (e : exps)) d = do
+  e' <- step e d
+  case e' of
+    None -> do
+      exps' <- step (ListE exps) d
+      case exps' of
+        Value (ListE xs) -> pure $ Value $ ListE $ e : xs
+        Value _ -> pure $ Exception $ "Unsupported change of structure in list expression " ++ pprint exp
+        x -> pure x
+    Value v -> pure $ Value $ ListE $ v : exps
+    x -> pure x
+  
 
 step exp _ = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
+
+stepMaybe :: Maybe Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
+stepMaybe Nothing _ = pure $ None
+stepMaybe (Just e) d = step e d
 
 makeAppE :: [Exp] -> EitherNone Exp
 makeAppE []  = Exception "Something went terribly wrong"
