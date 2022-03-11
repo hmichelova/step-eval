@@ -91,7 +91,7 @@ evalInterpreter e = do
       pure $ [| r |]
 
     moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes"]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List"]
 
     replaces :: String -> String
     replaces = unpack . replace "GHC.Types." "" . pack
@@ -377,7 +377,11 @@ getName (VarE (Name (OccName n) _)) = n
 getName _ = error "Given expression is not variable expression"
 
 processDecs :: Exp -> [Exp] -> [Dec] -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-processDecs _ _ [] _ = pure None
+processDecs hexp [exp1, exp2] [] _ = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
+processDecs hexp exps [] _ = let appE = makeAppE (hexp : exps) in
+  case appE of
+    Value v -> liftIO $ evalInterpreter v
+    x -> pure x
 processDecs hexp exps (FunD n [] : decs) d = processDecs hexp exps decs d
 processDecs hexp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) d = do-- TODO fix where
   if length exps /= length pats

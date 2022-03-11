@@ -57,5 +57,8 @@ funcs = [d|
   zipWith f (x : xs) (y : ys) = f x y : zipWith f xs ys
   zipWith _ _        _        = []
 
+  double :: Integer -> Integer
+  double x = x + x
+
   |]
 
