@@ -2,7 +2,9 @@ module DataTypes where
 
 import Control.Monad
 import Language.Haskell.TH
+import Language.Haskell.TH.Syntax
 import qualified Data.Map as M
+import qualified Control.Monad.Trans.State as S
 
 data EitherNone a = Exception String
                   | None
@@ -27,5 +29,33 @@ instance Monad EitherNone where
 
 type IOEitherNone a = IO (EitherNone a)
 
-type Env a = M.Map Name a
+type Env = (M.Map Name Exp, [Dec])
+
+type StateExp = S.StateT Env IO (EitherNone Exp)
+
+emptyEnv :: Env
+emptyEnv = (M.empty, [])
+
+setDec :: [Dec] -> Env -> Env
+setDec d (m, _) = (m, d)
+
+insertVar :: Name -> Exp -> Env -> Env
+insertVar n exp (m, d) = (M.insert n exp m, d)
+
+insertDec :: Dec -> Env -> Env
+insertDec dec (m, d) = (m, dec : d)
+
+getVar :: Name -> Env -> Maybe Exp
+getVar n (m, _) = M.lookup n m
+
+getDecs :: Name -> Bool -> Env -> [Dec]
+getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
+  where
+    theSameName :: Dec -> Bool
+    theSameName (SigD (Name (OccName name) _) _) = sign && n == name
+    theSameName (FunD (Name (OccName name) _) _) = n == name
+    theSameName _             = False
+
+getVarList :: Env -> [(Name, Exp)]
+getVarList (m, _) = M.toList m
 

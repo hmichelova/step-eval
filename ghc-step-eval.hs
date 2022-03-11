@@ -12,7 +12,7 @@ import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zi
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Data.Map as M
-import qualified Control.Monad.Trans.State.Lazy as S
+import qualified Control.Monad.Trans.State as S
 
 $funcs
 
@@ -44,54 +44,55 @@ fromValue :: EitherNone Exp -> Exp
 fromValue (Value exp) = exp
 fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
 
-step :: Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-step (VarE x) d = do
+step :: Exp -> StateExp
+step (VarE x) = do
   env <- S.get
-  case M.lookup x env of
+  case getVar x env of
     Just exp -> do
-      exp' <- step exp d
+      exp' <- step exp
       case exp' of
         Exception e -> pure $ Exception e
         None -> pure None
         Value v -> do
-          S.put $ M.insert x v env
+          S.put $ insertVar x v env
           pure $ Value $ (VarE x)
-    Nothing -> pure None -- TODO no value is ok?
+    Nothing -> pure None
 
-step (ConE _) _ = pure None
+step (ConE _) = pure None
 
-step (LitE _) _ = pure None
+step (LitE _) = pure None
 
-step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
+step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
   appExp hexp exps
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
 
-    appExp :: Exp -> [Exp] -> S.StateT (Env Exp) IO (EitherNone Exp)
+    appExp :: Exp -> [Exp] -> StateExp
     appExp hexp exps = do
-      hexp' <- step hexp d
+      hexp' <- step hexp
       case hexp' of
         Exception e -> pure $ Exception e
         None -> applyExp hexp exps
         Value v -> pure $ makeAppE (v : exps)
 
-    applyExp :: Exp -> [Exp] -> S.StateT (Env Exp) IO (EitherNone Exp)
+    applyExp :: Exp -> [Exp] -> StateExp
     applyExp hexp@(VarE x) exps = do
-      let decs = filterByName (getName hexp) False d
+      env <- S.get
+      let decs = getDecs x False env
       exps' <- expsToWHNF exps 0
       case snd exps' of
         None -> do
-          env <- S.get
-          if M.member x env
-            then applyExp (M.findWithDefault hexp x env) exps
-            else processDecs hexp exps decs d
+          env' <- S.get
+          case getVar x env' of
+            Just v -> applyExp v exps
+            Nothing -> processDecs hexp exps decs
         Value v -> pure $ makeAppE (hexp : replaceAtIndex (fst exps') (Value v) exps)
         x -> pure x
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
-      enexp' <- step exp d
+      enexp' <- step exp
       case enexp' of
         Exception e -> pure $ Exception e
         None -> pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
@@ -112,12 +113,12 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     applyExp (UnboundVarE _) _ = undefined
 
     applyExp hexp exps = do
-      nexp1' <- step hexp d
+      nexp1' <- step hexp
       case nexp1' of
         Value exp1' -> pure $ makeAppE (exp1' : exps)
         x           -> pure x
 
-    expsToWHNF :: [Exp] -> Int -> S.StateT (Env Exp) IO (Int, EitherNone Exp)
+    expsToWHNF :: [Exp] -> Int -> S.StateT Env IO (Int, EitherNone Exp)
     expsToWHNF [] _ = pure (0, None)
     expsToWHNF (x : xs) i = do
       x' <- toWHNF x
@@ -128,41 +129,41 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
-step ie@(InfixE me1 exp me2) d = do
-  enexp' <- step exp d
+step ie@(InfixE me1 exp me2) = do
+  enexp' <- step exp
   case enexp' of
     Exception e -> pure $ Exception e
     None -> do
-      eie1' <- stepMaybe me1 d
+      eie1' <- stepMaybe me1
       case eie1' of
         Exception e -> pure $ Exception e
         None -> do
-          eie2' <- stepMaybe me2 d
+          eie2' <- stepMaybe me2
           case eie2' of
             Exception e -> pure $ Exception e
-            None -> do
-              env <- S.get
-              if isNothing me1 || isNothing me2
-                then pure None
-                else liftIO $ evalInterpreter $ replaceVars ie $ M.toList env
+            None -> if isNothing me1 || isNothing me2
+              then pure None
+              else do
+                env <- S.get
+                liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
             Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
     Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
 
-step (ParensE e) d = do
-  e' <- step e d
+step (ParensE e) = do
+  e' <- step e
   case e' of
     Value v -> pure $ Value $ ParensE v
     x -> pure x
 
-step (LamE pats exp) d = pure $ Exception "Lambda expressions are not supported yet"
+step (LamE pats exp) = pure $ Exception "Lambda expressions are not supported yet"
 
-step (TupE []) d = pure None
-step exp@(TupE (me : exps)) d = do
-  e' <- stepMaybe me d
+step (TupE []) = pure None
+step exp@(TupE (me : exps)) = do
+  e' <- stepMaybe me
   case e' of
     None -> do
-      exps' <- step (TupE exps) d
+      exps' <- step (TupE exps)
       case exps' of
         Value (TupE xs) -> pure $ Value $ TupE $ me : xs
         Value _ -> pure $ Exception $ "Unsupported change of structure in tupple expression " ++ pprint exp
@@ -170,8 +171,8 @@ step exp@(TupE (me : exps)) d = do
     Value v -> pure $ Value $ TupE $ (Just v) : exps
     x -> pure x
 
-step (CondE b t f) d = do
-  b' <- step b d
+step (CondE b t f) = do
+  b' <- step b
   case b' of
     Exception e -> pure $ Exception e
     None -> case b of
@@ -179,14 +180,14 @@ step (CondE b t f) d = do
       otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
     Value v -> pure $ Value $ CondE v t f
 
-step (LetE decs exp) d = pure $ Exception "Let expressions are not supported yet"
+step (LetE decs exp) = pure $ Exception "Let expressions are not supported yet"
 
-step (ListE []) d = pure None
-step exp@(ListE (e : exps)) d = do
-  e' <- step e d
+step (ListE []) = pure None
+step exp@(ListE (e : exps)) = do
+  e' <- step e
   case e' of
     None -> do
-      exps' <- step (ListE exps) d
+      exps' <- step (ListE exps)
       case exps' of
         Value (ListE xs) -> pure $ Value $ ListE $ e : xs
         Value _ -> pure $ Exception $ "Unsupported change of structure in list expression " ++ pprint exp
@@ -194,92 +195,83 @@ step exp@(ListE (e : exps)) d = do
     Value v -> pure $ Value $ ListE $ v : exps
     x -> pure x
   
+step exp = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
-step exp _ = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
-
-stepMaybe :: Maybe Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-stepMaybe Nothing _ = pure $ None
-stepMaybe (Just e) d = step e d
+stepMaybe :: Maybe Exp -> StateExp
+stepMaybe Nothing = pure $ None
+stepMaybe (Just e) = step e
 
 makeAppE :: [Exp] -> EitherNone Exp
 makeAppE []  = Exception "Something went terribly wrong"
 makeAppE [x] = Value x
 makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
-filterByName :: String -> Bool -> [Dec] -> [Dec]
-filterByName n sign xs = filter theSameName xs
-  where
-    theSameName :: Dec -> Bool
-    theSameName (SigD (Name (OccName name) _) _) = sign && n == name
-    theSameName (FunD (Name (OccName name) _) _) = n == name
-    theSameName _                                = False
-
 -- Note: use only with var replaces Exp
-patMatch :: Pat -> Exp -> [Dec] -> S.StateT (Env Exp) IO (Bool, EitherNone Exp)
-patMatch WildP _ _ = pure (True, None)
-patMatch (LitP lp) (LitE le) _ = pure (lp == le, None)
-patMatch p@(LitP lp) exp d = do
-  exp' <- step exp d
+patMatch :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
+patMatch WildP _ = pure (True, None)
+patMatch (LitP lp) (LitE le) = pure (lp == le, None)
+patMatch p@(LitP lp) exp = do
+  exp' <- step exp
   pure (False, exp')
-patMatch (VarP n) exp _ = do
+patMatch (VarP n) exp = do
   env <- S.get
-  S.put $ M.insert n exp env
+  S.put $ insertVar n exp env
   pure (True, None)
-patMatch (TupP ps) (TupE es) d = if length ps /= length es
+patMatch (TupP ps) (TupE es) = if length ps /= length es
   then pure (False, None)
-  else patMatchTup ps es d
+  else patMatchTup ps es
   where
-    patMatchTup :: [Pat] -> [Maybe Exp] -> [Dec] -> S.StateT (Env Exp) IO (Bool, EitherNone Exp)
-    patMatchTup [] [] _ = pure (True, None)
-    patMatchTup (p : pats) (Just e : exps) d = do
-      rv <- patMatch p e d
+    patMatchTup :: [Pat] -> [Maybe Exp] -> S.StateT Env IO (Bool, EitherNone Exp)
+    patMatchTup [] [] = pure (True, None)
+    patMatchTup (p : pats) (Just e : exps) = do
+      rv <- patMatch p e
       case rv of
         (True, None) -> do
-          rv1 <- patMatchTup pats exps d
+          rv1 <- patMatchTup pats exps
           case rv1 of
             (_, Value (TupE exps')) -> pure (False, Value (TupE (Just e : exps')))
             x -> pure x
         (_, Value v) -> pure (False, Value (TupE (Just v : exps)))
         x -> pure x
-    patMatchTup (p : pats) (Nothing : exps) d = pure (False, Exception "Missing argument in tuple")
-    patMatchTup _ _ _ = pure (False, Exception "Something went wrong in tuples check")
-patMatch (ConP np _ []) (ConE ne) _ = pure (np == ne, None)
-patMatch (ConP np _ []) (ListE []) _ = pure (np == '[], None)
-patMatch (ConP np _ _) (ConE ne) _ = undefined -- TODO AppE
-patMatch (AsP n p) exp d = do
-  rv <- patMatch p exp d
+    patMatchTup (p : pats) (Nothing : exps) = pure (False, Exception "Missing argument in tuple")
+    patMatchTup _ _ = pure (False, Exception "Something went wrong in tuples check")
+patMatch (ConP np _ []) (ConE ne) = pure (np == ne, None)
+patMatch (ConP np _ []) (ListE []) = pure (np == '[], None)
+patMatch (ConP np _ _) (ConE ne) = undefined -- TODO AppE
+patMatch (AsP n p) exp = do
+  rv <- patMatch p exp
   case rv of
     (True, None) -> do
       env <- S.get
-      S.put $ M.insert n exp env
+      S.put $ insertVar n exp env
       pure (True, None)
     x -> pure x
-patMatch (ParensP p) exp d = patMatch p exp d
-patMatch (ListP ps) (ListE es) d = if length ps /= length es
+patMatch (ParensP p) exp = patMatch p exp
+patMatch (ListP ps) (ListE es) = if length ps /= length es
   then pure (False, None)
-  else checkLists ps es d
+  else checkLists ps es
   where
-    checkLists :: [Pat] -> [Exp] -> [Dec] -> S.StateT (Env Exp) IO (Bool, EitherNone Exp)
-    checkLists [] [] _ = pure (True, None)
-    checkLists (p : pats) (e : exps) d = do
-      rv <- patMatch p e d
+    checkLists :: [Pat] -> [Exp] -> S.StateT Env IO (Bool, EitherNone Exp)
+    checkLists [] [] = pure (True, None)
+    checkLists (p : pats) (e : exps) = do
+      rv <- patMatch p e
       case rv of
         (True, None) -> do
-          rv1 <- checkLists pats exps d
+          rv1 <- checkLists pats exps
           case rv1 of
             (_, Value (ListE exps')) -> pure (False, Value (ListE (e : exps')))
             x -> pure x
         (_, Value v) -> pure (False, Value (ListE (v : exps)))
         x -> pure x
-    checkLists _ _ _ = pure (False, Exception "Something went wrong in lists check")
-patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) d = do
-  rv <- patMatch (ConP np [] []) exp d -- TODO check
+    checkLists _ _ = pure (False, Exception "Something went wrong in lists check")
+patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
+  rv <- patMatch (ConP np [] []) exp -- TODO check
   case rv of
     (True, None) -> do
-      rv1 <- patMatch p1 e1 d
+      rv1 <- patMatch p1 e1
       case rv1 of
         (True, None) -> do
-          rv2 <- patMatch p2 e2 d
+          rv2 <- patMatch p2 e2
           case rv2 of
             (_, Value v) -> pure (False, Value (InfixE (Just e1) exp (Just v)))
             x -> pure x
@@ -287,7 +279,7 @@ patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) d = do
         x -> pure x
     (_, Value v) -> pure (False, Value (InfixE (Just e1) v (Just e2)))
     x -> pure x
-patMatch _ _ _ = pure (False, None) -- TODO
+patMatch _ _ = pure (False, None) -- TODO
 
 replaceVars :: Exp -> [(Name, Exp)] -> Exp
 replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
@@ -316,62 +308,62 @@ getName :: Exp -> String
 getName (VarE (Name (OccName n) _)) = n
 getName _ = error "Given expression is not variable expression"
 
-processDecs :: Exp -> [Exp] -> [Dec] -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-processDecs hexp [exp1, exp2] [] _ = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
-processDecs hexp exps [] _ = let appE = makeAppE (hexp : exps) in
+processDecs :: Exp -> [Exp] -> [Dec] -> StateExp
+processDecs hexp [exp1, exp2] [] = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
+processDecs hexp exps [] = let appE = makeAppE (hexp : exps) in
   case appE of
     Value v -> liftIO $ evalInterpreter v
     x -> pure x
-processDecs hexp exps (FunD n [] : decs) d = processDecs hexp exps decs d
-processDecs hexp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) d = do-- TODO fix where
+processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
+processDecs hexp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = do-- TODO fix where
   if length exps /= length pats
     then pure $ Exception "Wrong number of arguments in function ..."
     else do
-      exp' <- patsMatch hexp exps pats d
+      exp' <- patsMatch hexp exps pats
       changeOrContinue exp'
   where
-    changeOrContinue :: (Bool, EitherNone Exp) -> S.StateT (Env Exp) IO (EitherNone Exp)
+    changeOrContinue :: (Bool, EitherNone Exp) -> StateExp
     changeOrContinue (_, (Exception e)) = pure $ Exception e
-    changeOrContinue (False, None) = processDecs hexp exps ((FunD n clauses) : decs) d
+    changeOrContinue (False, None) = processDecs hexp exps ((FunD n clauses) : decs)
     changeOrContinue (True, None) = pure $ Value e
     changeOrContinue (_, changedValue) = pure changedValue
 
-processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) d = pure $ Exception "Guards are not supported"
+processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = pure $ Exception "Guards are not supported"
 
-patsMatch :: Exp -> [Exp] -> [Pat] -> [Dec] -> S.StateT (Env Exp) IO (Bool, EitherNone Exp)
-patsMatch hexp (e : exps) (p : pats) d = do
+patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO (Bool, EitherNone Exp)
+patsMatch hexp (e : exps) (p : pats) = do
   originEnv <- S.get
-  rv <- patMatch p (replaceVars e (M.toList originEnv)) d
+  rv <- patMatch p (replaceVars e (getVarList originEnv))
   case rv of
-    (True, None) -> patsMatch (AppE hexp e) exps pats d
+    (True, None) -> patsMatch (AppE hexp e) exps pats
     (_, Value v) -> pure (False, makeAppE (hexp : v : exps))
     x -> do
       S.put originEnv
       pure x
-patsMatch _ [] [] _ = pure (True, None)
-patsMatch _ [] p _ = pure $ (False,
+patsMatch _ [] [] = pure (True, None)
+patsMatch _ [] p = pure $ (False,
   Exception ("Number of arguments (0) and " ++
              "number of paterns (" ++ show (length p) ++ ") are not the same"))
-patsMatch _ e p _ = pure $ (False,
+patsMatch _ e p = pure $ (False,
   Exception ("Number of arguments (" ++ show (length e) ++ ") and " ++
              "number of paterns (" ++ show (length p) ++ ") are not the same"))-- TODO fix etared
 
-toWHNF :: Exp -> S.StateT (Env Exp) IO (EitherNone Exp)
+toWHNF :: Exp -> StateExp
 toWHNF (CompE stmts) = undefined -- TODO fix
 toWHNF (ArithSeqE range) = undefined -- TODO fix
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
 toWHNF e@(VarE x) = do
   env <- S.get
-  if M.member x env
-    then do
-      e' <- toWHNF $ M.findWithDefault e x env
+  case getVar x env of
+    Just v -> do
+      e' <- toWHNF v
       case e' of
         Value v -> do
           env' <- S.get
-          S.put $ M.insert x v env'
+          S.put $ insertVar x v env'
           pure $ e'
         x' -> pure $ x'
-    else pure None
+    Nothing -> pure None
 toWHNF exp = pure None
 
 evaluateExp :: Q Exp -> Q [Dec] -> IO ()
@@ -382,25 +374,25 @@ evaluateExp qexp qdec = do
   where
     process :: Exp -> [Dec] -> IO ()
     process e d = do
-      S.runStateT (nextStep (Value e) d) M.empty
+      S.runStateT (nextStep (Value e)) $ setDec d emptyEnv
       return ()
 
-    niceOutputPrint :: EitherNone Exp -> S.StateT (Env Exp) IO ()
+    niceOutputPrint :: EitherNone Exp -> S.StateT Env IO ()
     niceOutputPrint (Exception e) = fail e
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
-      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e $ M.toList env
+      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e $ getVarList env
 
-    nextStep :: EitherNone Exp -> [Dec] -> S.StateT (Env Exp) IO (EitherNone Exp)
-    nextStep ene@(Value e) d = do
+    nextStep :: EitherNone Exp -> StateExp
+    nextStep ene@(Value e) = do
       x <- niceOutputPrint ene
-      ene1 <- step e d
-      nextStep ene1 d
-    nextStep None _ = do
+      ene1 <- step e
+      nextStep ene1
+    nextStep None = do
       liftIO $ putStrLn "Done"
       pure None
-    nextStep (Exception e) _ = fail e
+    nextStep (Exception e) = fail e
 
 
     removeSpec :: String -> String
