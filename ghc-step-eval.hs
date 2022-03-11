@@ -141,13 +141,14 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     applyExp hexp@(VarE x) exps = do
       let decs = filterByName (getName hexp) False d
       exps' <- expsToWHNF exps 0
-      if isNothing $ snd exps' -- TODO fix exception
-        then do
+      case snd exps' of
+        None -> do
           env <- S.get
           if M.member x env
-            then applyExp (M.findWithDefault hexp x env) exps -- TODO TODO here is the problem!
+            then applyExp (M.findWithDefault hexp x env) exps
             else processDecs hexp exps decs d
-        else pure $ makeAppE (hexp : replaceAtIndex (fst exps') ((fromJust . snd) exps') exps)
+        Value v -> pure $ makeAppE (hexp : replaceAtIndex (fst exps') (Value v) exps)
+        x -> pure x
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
       enexp' <- step exp d
@@ -176,13 +177,13 @@ step exp@(AppE exp1 exp2) d = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         Value exp1' -> pure $ makeAppE (exp1' : exps)
         x           -> pure x
 
-    expsToWHNF :: [Exp] -> Int -> S.StateT (Env Exp) IO (Int, Maybe (EitherNone Exp))
-    expsToWHNF [] _ = pure (0, Nothing)
+    expsToWHNF :: [Exp] -> Int -> S.StateT (Env Exp) IO (Int, EitherNone Exp)
+    expsToWHNF [] _ = pure (0, None)
     expsToWHNF (x : xs) i = do
       x' <- toWHNF x
-      if isNone x'
-        then expsToWHNF xs (i + 1)
-        else pure (i, Just x')
+      case x' of
+        None -> expsToWHNF xs (i + 1)
+        _ -> pure (i, x')
 
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
