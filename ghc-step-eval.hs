@@ -54,7 +54,8 @@ step (VarE x) = do
         Exception e -> pure $ Exception e
         None -> pure None
         Value v -> do
-          S.put $ insertVar x v env
+          env' <- S.get
+          S.put $ insertVar x v env'
           pure $ Value $ (VarE x)
     Nothing -> pure None
 
@@ -315,7 +316,7 @@ processDecs hexp exps [] = let appE = makeAppE (hexp : exps) in
     Value v -> liftIO $ evalInterpreter v
     x -> pure x
 processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
-processDecs hexp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = do-- TODO fix where
+processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) = do
   if length exps /= length pats
     then pure $ Exception "Wrong number of arguments in function ..."
     else do
@@ -323,9 +324,12 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) _ : clauses) : decs) = do
       changeOrContinue exp'
   where
     changeOrContinue :: (Bool, EitherNone Exp) -> StateExp
-    changeOrContinue (_, (Exception e)) = pure $ Exception e
+    changeOrContinue (_, Exception e) = pure $ Exception e
     changeOrContinue (False, None) = processDecs hexp exps ((FunD n clauses) : decs)
-    changeOrContinue (True, None) = pure $ Value e
+    changeOrContinue (True, None) = do
+      env <- S.get
+      S.put $ insertDec whereDec env
+      pure $ Value e
     changeOrContinue (_, changedValue) = pure changedValue
 
 processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = pure $ Exception "Guards are not supported"

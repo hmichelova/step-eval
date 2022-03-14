@@ -42,8 +42,8 @@ setDec d (m, _) = (m, d)
 insertVar :: Name -> Exp -> Env -> Env
 insertVar n exp (m, d) = (M.insert n exp m, d)
 
-insertDec :: Dec -> Env -> Env
-insertDec dec (m, d) = (m, dec : d)
+insertDec :: [Dec] -> Env -> Env
+insertDec decs (m, d) = (m, decs ++ d)
 
 getVar :: Name -> Env -> Maybe Exp
 getVar n (m, _) = M.lookup n m
