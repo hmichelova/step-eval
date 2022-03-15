@@ -81,16 +81,11 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     applyExp :: Exp -> [Exp] -> StateExp
     applyExp hexp@(VarE x) exps = do
       env <- S.get
-      let decs = getDecs x False env
-      exps' <- expsToWHNF exps 0
-      case snd exps' of
-        None -> do
-          env' <- S.get
-          case getVar x env' of
-            Just v -> applyExp v exps
-            Nothing -> processDecs hexp exps decs
-        Value v -> pure $ makeAppE (hexp : replaceAtIndex (fst exps') (Value v) exps)
-        x -> pure x
+      case getVar x env of
+        Just v -> applyExp v exps
+        Nothing -> do
+          let decs = getDecs x False env
+          processDecs hexp exps decs
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
       enexp' <- step exp
@@ -119,14 +114,6 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         Value exp1' -> pure $ makeAppE (exp1' : exps)
         x           -> pure x
 
-    expsToWHNF :: [Exp] -> Int -> S.StateT Env IO (Int, EitherNone Exp)
-    expsToWHNF [] _ = pure (0, None)
-    expsToWHNF (x : xs) i = do
-      x' <- toWHNF x
-      case x' of
-        None -> expsToWHNF xs (i + 1)
-        _ -> pure (i, x')
-
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
@@ -139,17 +126,35 @@ step ie@(InfixE me1 exp me2) = do
       case eie1' of
         Exception e -> pure $ Exception e
         None -> do
-          eie2' <- stepMaybe me2
-          case eie2' of
-            Exception e -> pure $ Exception e
-            None -> if isNothing me1 || isNothing me2
-              then pure None
-              else do
-                env <- S.get
-                liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
-            Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
+          list <- joinList ie
+          case list of
+            None -> do
+              eie2' <- stepMaybe me2
+              case eie2' of
+                Exception e -> pure $ Exception e
+                None -> if isNothing me1 || isNothing me2
+                  then pure None
+                  else do
+                    env <- S.get
+                    liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
+                Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
+            x -> pure x
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
     Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
+  where
+    joinList :: Exp -> StateExp
+    joinList (VarE x) = do
+      env <- S.get
+      case getVar x env of
+        Just e -> joinList e
+        Nothing -> pure None
+    joinList e@(ListE _) = pure $ Value e
+    joinList (InfixE (Just e1) (ConE var) (Just e2)) = if var /= '(:) then pure None else do
+      e2' <- joinList e2
+      case e2' of
+        Value (ListE xs) -> pure $ Value $ ListE (e1 : xs)
+        x -> pure x
+    joinList e = pure None
 
 step (ParensE e) = do
   e' <- step e
@@ -208,12 +213,37 @@ makeAppE [x] = Value x
 makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
 -- Note: use only with var replaces Exp
+patMatch' :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
+patMatch' p e = do
+  rv1 <- patMatch p e
+  case rv1 of
+    (False, None) -> do
+      env <- S.get
+      let e' = replaceVars e (getVarList env)
+      whnf <- toWHNF e'
+      case whnf of
+        None -> do
+          rv2 <- patMatch p e'
+          case rv2 of
+            (False, None) -> do
+              rv3 <- step e
+              pure (False, rv3)
+            x -> pure x
+        Value v -> do
+          rv2 <- patMatch p v
+          case rv2 of
+            (False, None) -> do
+              rv3 <- step e
+              pure (False, rv3)
+            x -> pure x
+        x -> pure (False, x)
+    x -> pure x
+    
+
+
 patMatch :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
-patMatch WildP _ = pure (True, None)
 patMatch (LitP lp) (LitE le) = pure (lp == le, None)
-patMatch p@(LitP lp) exp = do
-  exp' <- step exp
-  pure (False, exp')
+patMatch p@(LitP lp) _ = pure (False, None)
 patMatch (VarP n) exp = do
   env <- S.get
   S.put $ insertVar n exp env
@@ -236,9 +266,48 @@ patMatch (TupP ps) (TupE es) = if length ps /= length es
         x -> pure x
     patMatchTup (p : pats) (Nothing : exps) = pure (False, Exception "Missing argument in tuple")
     patMatchTup _ _ = pure (False, Exception "Something went wrong in tuples check")
+patMatch pat@(TupP _) exp = pure (False, None)
+--  pure (False, Exception $ "The expression " ++ pprint exp ++
+--                           " can't be matched with tuple pattern " ++ pprint pat)
+patMatch pat@(UnboxedTupP _) _ =
+  pure (False, Exception $ "Unboxed tupple pattern " ++ pprint pat ++ " is not supported")
+
+patMatch pat@(UnboxedSumP _ _ _) _ =
+  pure (False, Exception $ "Unboxed sum pattern " ++ pprint pat ++ " is not supported")
+
 patMatch (ConP np _ []) (ConE ne) = pure (np == ne, None)
 patMatch (ConP np _ []) (ListE []) = pure (np == '[], None)
-patMatch (ConP np _ _) (ConE ne) = undefined -- TODO AppE
+patMatch (ConP np _ _) exp = pure (False, None) -- TODO AppE
+
+patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
+  rv <- patMatch' (ConP np [] []) exp -- TODO check
+  case rv of
+    (True, None) -> do
+      rv1 <- patMatch' p1 e1
+      case rv1 of
+        (True, None) -> do
+          rv2 <- patMatch' p2 e2
+          case rv2 of
+            (_, Value v) -> pure (False, Value (InfixE (Just e1) exp (Just v)))
+            x -> pure x
+        (_, Value v) -> pure (False, Value (InfixE (Just v) exp (Just e2)))
+        x -> pure x
+    (_, Value v) -> pure (False, Value (InfixE (Just e1) v (Just e2)))
+    x -> pure x
+patMatch (InfixP p1 np p2) exp = pure (False, None)-- TODO fix AppE
+-- Note: nevolat WHNF inde ale az v patMatch ked je to nutne... lebo inak je problem s rekurziou
+
+patMatch pat@(UInfixP _ _ _) _ =
+  pure (False, Exception $ "UInfix pattern " ++ pprint pat ++ " is not supported")
+
+patMatch (ParensP p) exp = patMatch p exp
+
+patMatch pat@(TildeP _) _ =
+  pure (False, Exception $ "Tilde pattern " ++ pprint pat ++ " is not supported")
+
+patMatch pat@(BangP _) _ =
+  pure (False, Exception $ "Bang pattern " ++ pprint pat ++ " is not supported")
+
 patMatch (AsP n p) exp = do
   rv <- patMatch p exp
   case rv of
@@ -247,7 +316,12 @@ patMatch (AsP n p) exp = do
       S.put $ insertVar n exp env
       pure (True, None)
     x -> pure x
-patMatch (ParensP p) exp = patMatch p exp
+
+patMatch WildP _ = pure (True, None)
+  
+patMatch pat@(RecP _ _) _ =
+  pure (False, Exception $ "Record pattern " ++ pprint pat ++ " is not supported")
+
 patMatch (ListP ps) (ListE es) = if length ps /= length es
   then pure (False, None)
   else checkLists ps es
@@ -255,7 +329,7 @@ patMatch (ListP ps) (ListE es) = if length ps /= length es
     checkLists :: [Pat] -> [Exp] -> S.StateT Env IO (Bool, EitherNone Exp)
     checkLists [] [] = pure (True, None)
     checkLists (p : pats) (e : exps) = do
-      rv <- patMatch p e
+      rv <- patMatch' p e
       case rv of
         (True, None) -> do
           rv1 <- checkLists pats exps
@@ -265,22 +339,15 @@ patMatch (ListP ps) (ListE es) = if length ps /= length es
         (_, Value v) -> pure (False, Value (ListE (v : exps)))
         x -> pure x
     checkLists _ _ = pure (False, Exception "Something went wrong in lists check")
-patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
-  rv <- patMatch (ConP np [] []) exp -- TODO check
-  case rv of
-    (True, None) -> do
-      rv1 <- patMatch p1 e1
-      case rv1 of
-        (True, None) -> do
-          rv2 <- patMatch p2 e2
-          case rv2 of
-            (_, Value v) -> pure (False, Value (InfixE (Just e1) exp (Just v)))
-            x -> pure x
-        (_, Value v) -> pure (False, Value (InfixE (Just v) exp (Just e2)))
-        x -> pure x
-    (_, Value v) -> pure (False, Value (InfixE (Just e1) v (Just e2)))
-    x -> pure x
-patMatch _ _ = pure (False, None) -- TODO
+patMatch (ListP []) exp = patMatch (ConP '[] [] []) exp
+patMatch (ListP (x : xs)) exp = patMatch (InfixP x '(:) (ListP xs)) exp
+
+patMatch pat@(SigP _ _) _ =
+  pure (False, Exception $ "Sig pattern " ++ pprint pat ++ " is not supported")
+
+patMatch pat@(ViewP _ _) _ =
+  pure (False, Exception $ "View pattern " ++ pprint pat ++ " is not supported")
+
 
 replaceVars :: Exp -> [(Name, Exp)] -> Exp
 replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
@@ -337,7 +404,7 @@ processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = 
 patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO (Bool, EitherNone Exp)
 patsMatch hexp (e : exps) (p : pats) = do
   originEnv <- S.get
-  rv <- patMatch p (replaceVars e (getVarList originEnv))
+  rv <- patMatch' p e
   case rv of
     (True, None) -> patsMatch (AppE hexp e) exps pats
     (_, Value v) -> pure (False, makeAppE (hexp : v : exps))
@@ -400,5 +467,5 @@ evaluateExp qexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List."] . pack
 
