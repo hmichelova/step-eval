@@ -212,7 +212,6 @@ makeAppE []  = Exception "Something went terribly wrong"
 makeAppE [x] = Value x
 makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
--- Note: use only with var replaces Exp
 patMatch' :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
 patMatch' p e = do
   rv1 <- patMatch p e
@@ -220,26 +219,42 @@ patMatch' p e = do
     (False, None) -> do
       env <- S.get
       let e' = replaceVars e (getVarList env)
-      whnf <- toWHNF e'
+      whnf <- toWHNFWithDefault e'
       case whnf of
-        None -> do
-          rv2 <- patMatch p e'
-          case rv2 of
-            (False, None) -> do
-              rv3 <- step e
-              pure (False, rv3)
-            x -> pure x
         Value v -> do
           rv2 <- patMatch p v
           case rv2 of
             (False, None) -> do
-              rv3 <- step e
-              pure (False, rv3)
+              rv3 <- listJoin v
+              case rv3 of
+                None -> do
+                  rv4 <- step e
+                  pure (False, rv4)
+                Value v' -> patMatch p v'
+                x -> pure (False, x)
             x -> pure x
         x -> pure (False, x)
     x -> pure x
     
+  where
+    toWHNFWithDefault :: Exp -> StateExp
+    toWHNFWithDefault e = do
+      whnf <- toWHNF e
+      case whnf of
+        None -> pure $ Value e
+        x -> pure $ x
 
+    listJoin :: Exp -> StateExp
+    listJoin e@(ListE _) = pure $ Value e
+    listJoin e@(InfixE (Just e1) (ConE n) (Just e2)) = do
+      if n == '(:)
+        then do
+          e2' <- listJoin e2
+          case e2' of
+            Value (ListE xs) -> pure $ Value $ ListE $ e1 : xs
+            _ -> pure None
+        else pure $ None
+    listJoin e = pure $ None
 
 patMatch :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
 patMatch (LitP lp) (LitE le) = pure (lp == le, None)
@@ -267,8 +282,7 @@ patMatch (TupP ps) (TupE es) = if length ps /= length es
     patMatchTup (p : pats) (Nothing : exps) = pure (False, Exception "Missing argument in tuple")
     patMatchTup _ _ = pure (False, Exception "Something went wrong in tuples check")
 patMatch pat@(TupP _) exp = pure (False, None)
---  pure (False, Exception $ "The expression " ++ pprint exp ++
---                           " can't be matched with tuple pattern " ++ pprint pat)
+
 patMatch pat@(UnboxedTupP _) _ =
   pure (False, Exception $ "Unboxed tupple pattern " ++ pprint pat ++ " is not supported")
 
@@ -295,7 +309,6 @@ patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
     (_, Value v) -> pure (False, Value (InfixE (Just e1) v (Just e2)))
     x -> pure x
 patMatch (InfixP p1 np p2) exp = pure (False, None)-- TODO fix AppE
--- Note: nevolat WHNF inde ale az v patMatch ked je to nutne... lebo inak je problem s rekurziou
 
 patMatch pat@(UInfixP _ _ _) _ =
   pure (False, Exception $ "UInfix pattern " ++ pprint pat ++ " is not supported")
