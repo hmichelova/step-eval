@@ -450,8 +450,11 @@ toWHNF e@(VarE x) = do
     Nothing -> pure None
 toWHNF exp = pure None
 
-evaluateExp :: Q Exp -> Q [Dec] -> IO ()
-evaluateExp qexp qdec = do
+evaluateExp :: Q Exp -> IO ()
+evaluateExp = flip evaluateExp' funcs
+
+evaluateExp' :: Q Exp -> Q [Dec] -> IO ()
+evaluateExp' qexp qdec = do
   e <- runQ qexp
   d <- runQ qdec
   process e d
