@@ -13,8 +13,8 @@ funcs = [d|
   const x _ = x
 
   take :: Int -> [a] -> [a]
-  take _ [] = []
   take 0 _  = []
+  take _ [] = []
   take n (x : xs) = if n < 0 then [] else x : take (n - 1) xs
 
   map :: (a -> b) -> [a] -> [b]
@@ -57,8 +57,19 @@ funcs = [d|
   zipWith f (x : xs) (y : ys) = f x y : zipWith f xs ys
   zipWith _ _        _        = []
 
-  double :: Integer -> Integer
-  double x = x + x
+  infixr 3 &&
+  (&&) :: Bool -> Bool -> Bool
+  (&&) False _ = False
+  (&&) _     x = x
+
+  infixr 2 ||
+  (||) :: Bool -> Bool -> Bool
+  (||) True _ = True
+  (||) _    x = x
+
+  not :: Bool -> Bool
+  not True  = False
+  not False = True
 
   |]
 

@@ -8,7 +8,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith )
+import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Data.Map as M
