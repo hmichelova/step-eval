@@ -31,7 +31,7 @@ evalInterpreter e = do
       pure $ [| r |]
 
     moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List"]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err"]
 
     replaces :: String -> String
     replaces = unpack . replace "GHC.Types." "" . pack
@@ -126,19 +126,19 @@ step ie@(InfixE me1 exp me2) = do
       case eie1' of
         Exception e -> pure $ Exception e
         None -> do
-          list <- joinList ie
-          case list of
-            None -> do
-              eie2' <- stepMaybe me2
-              case eie2' of
-                Exception e -> pure $ Exception e
-                None -> if isNothing me1 || isNothing me2
-                  then pure None
-                  else do
+          eie2' <- stepMaybe me2
+          case eie2' of
+            Exception e -> pure $ Exception e
+            None -> if isNothing me1 || isNothing me2
+              then pure None
+              else do
+                list <- joinList ie
+                case list of
+                  None -> do
                     env <- S.get
                     liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
-                Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
-            x -> pure x
+                  x -> pure x
+            Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
     Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
   where
@@ -149,6 +149,7 @@ step ie@(InfixE me1 exp me2) = do
         Just e -> joinList e
         Nothing -> pure None
     joinList e@(ListE _) = pure $ Value e
+    joinList (ConE n) = pure $ if n == '[] then Value $ ListE [] else None
     joinList (InfixE (Just e1) (ConE var) (Just e2)) = if var /= '(:) then pure None else do
       e2' <- joinList e2
       case e2' of
@@ -212,57 +213,19 @@ makeAppE []  = Exception "Something went terribly wrong"
 makeAppE [x] = Value x
 makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
-patMatch' :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
-patMatch' p e = do
-  rv1 <- patMatch p e
-  case rv1 of
-    (False, None) -> do
-      env <- S.get
-      let e' = replaceVars e (getVarList env)
-      whnf <- toWHNFWithDefault e'
-      case whnf of
-        Value v -> do
-          rv2 <- patMatch p v
-          case rv2 of
-            (False, None) -> do
-              rv3 <- listJoin v
-              case rv3 of
-                None -> do
-                  rv4 <- step e
-                  pure (False, rv4)
-                Value v' -> patMatch p v'
-                x -> pure (False, x)
-            x -> pure x
-        x -> pure (False, x)
-    x -> pure x
-    
-  where
-    toWHNFWithDefault :: Exp -> StateExp
-    toWHNFWithDefault e = do
-      whnf <- toWHNF e
-      case whnf of
-        None -> pure $ Value e
-        x -> pure $ x
-
-    listJoin :: Exp -> StateExp
-    listJoin e@(ListE _) = pure $ Value e
-    listJoin e@(InfixE (Just e1) (ConE n) (Just e2)) = do
-      if n == '(:)
-        then do
-          e2' <- listJoin e2
-          case e2' of
-            Value (ListE xs) -> pure $ Value $ ListE $ e1 : xs
-            _ -> pure None
-        else pure $ None
-    listJoin e = pure $ None
-
 patMatch :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
 patMatch (LitP lp) (LitE le) = pure (lp == le, None)
-patMatch p@(LitP lp) _ = pure (False, None)
+patMatch p@(LitP _) exp = patMatch' p exp
+
+patMatch (VarP np) e@(VarE ne) = if np == ne then pure (True, None) else do
+  env <- S.get
+  S.put $ insertVar np e env
+  pure (True, None)
 patMatch (VarP n) exp = do
   env <- S.get
-  S.put $ insertVar n exp env
+  S.put $ insertVar n exp env -- TODO check if not necessary to replaceVar
   pure (True, None)
+
 patMatch (TupP ps) (TupE es) = if length ps /= length es
   then pure (False, None)
   else patMatchTup ps es
@@ -275,13 +238,14 @@ patMatch (TupP ps) (TupE es) = if length ps /= length es
         (True, None) -> do
           rv1 <- patMatchTup pats exps
           case rv1 of
-            (_, Value (TupE exps')) -> pure (False, Value (TupE (Just e : exps')))
+            (b2, Value (TupE exps')) -> pure (b2, Value (TupE (Just e : exps')))
             x -> pure x
-        (_, Value v) -> pure (False, Value (TupE (Just v : exps)))
+        (b1, Value v) -> pure (b1, Value (TupE (Just v : exps)))
         x -> pure x
     patMatchTup (p : pats) (Nothing : exps) = pure (False, Exception "Missing argument in tuple")
     patMatchTup _ _ = pure (False, Exception "Something went wrong in tuples check")
-patMatch pat@(TupP _) exp = pure (False, None)
+
+patMatch p@(TupP _) exp = patMatch' p exp
 
 patMatch pat@(UnboxedTupP _) _ =
   pure (False, Exception $ "Unboxed tupple pattern " ++ pprint pat ++ " is not supported")
@@ -289,26 +253,37 @@ patMatch pat@(UnboxedTupP _) _ =
 patMatch pat@(UnboxedSumP _ _ _) _ =
   pure (False, Exception $ "Unboxed sum pattern " ++ pprint pat ++ " is not supported")
 
+-- TODO add (ConP np _ (x : xs)) - for user defined data types
 patMatch (ConP np _ []) (ConE ne) = pure (np == ne, None)
 patMatch (ConP np _ []) (ListE []) = pure (np == '[], None)
-patMatch (ConP np _ _) exp = pure (False, None) -- TODO AppE
+patMatch (ConP np _ []) (ListE (_ : _)) = pure (False, None)
+patMatch p@(ConP np _ []) exp@(InfixE me1 (ConE n) me2) = if n == '(:) && np == '[]
+  then pure (False, None)
+  else patMatch' p exp
+patMatch p@(ConP np _ _) exp = patMatch' p exp
 
 patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
-  rv <- patMatch' (ConP np [] []) exp -- TODO check
+  rv <- patMatch (ConP np [] []) exp
   case rv of
     (True, None) -> do
-      rv1 <- patMatch' p1 e1
+      rv1 <- patMatch p1 e1
       case rv1 of
         (True, None) -> do
-          rv2 <- patMatch' p2 e2
+          rv2 <- patMatch p2 e2
           case rv2 of
-            (_, Value v) -> pure (False, Value (InfixE (Just e1) exp (Just v)))
+            (b2, Value v) -> pure (b2, Value (InfixE (Just e1) exp (Just v)))
             x -> pure x
-        (_, Value v) -> pure (False, Value (InfixE (Just v) exp (Just e2)))
+        (b1, Value v) -> pure (b1, Value (InfixE (Just v) exp (Just e2)))
         x -> pure x
-    (_, Value v) -> pure (False, Value (InfixE (Just e1) v (Just e2)))
+    (b, Value v) -> pure (b, Value (InfixE (Just e1) v (Just e2)))
     x -> pure x
-patMatch (InfixP p1 np p2) exp = pure (False, None)-- TODO fix AppE
+patMatch p@(InfixP _ np _) exp@(ConE ne) = if np == '(:) && ne == '[]
+  then pure (False, None)
+  else patMatch' p exp
+patMatch p@(InfixP _ np _) exp@(ListE []) = if np == '(:)
+  then pure (False, None)
+  else pure (False, Exception $ "Try to match value " ++ pprint exp ++ " to pattern " ++ pprint p)
+patMatch p@(InfixP _ _ _) exp = patMatch' p exp
 
 patMatch pat@(UInfixP _ _ _) _ =
   pure (False, Exception $ "UInfix pattern " ++ pprint pat ++ " is not supported")
@@ -326,7 +301,7 @@ patMatch (AsP n p) exp = do
   case rv of
     (True, None) -> do
       env <- S.get
-      S.put $ insertVar n exp env
+      S.put $ insertVar n (replaceVars exp (M.toList (fst env))) env -- TODO rewrite
       pure (True, None)
     x -> pure x
 
@@ -342,14 +317,14 @@ patMatch (ListP ps) (ListE es) = if length ps /= length es
     checkLists :: [Pat] -> [Exp] -> S.StateT Env IO (Bool, EitherNone Exp)
     checkLists [] [] = pure (True, None)
     checkLists (p : pats) (e : exps) = do
-      rv <- patMatch' p e
+      rv <- patMatch p e
       case rv of
         (True, None) -> do
           rv1 <- checkLists pats exps
           case rv1 of
-            (_, Value (ListE exps')) -> pure (False, Value (ListE (e : exps')))
+            (b2, Value (ListE exps')) -> pure (b2, Value (ListE (e : exps')))
             x -> pure x
-        (_, Value v) -> pure (False, Value (ListE (v : exps)))
+        (b1, Value v) -> pure (b1, Value (ListE (v : exps)))
         x -> pure x
     checkLists _ _ = pure (False, Exception "Something went wrong in lists check")
 patMatch (ListP []) exp = patMatch (ConP '[] [] []) exp
@@ -361,6 +336,23 @@ patMatch pat@(SigP _ _) _ =
 patMatch pat@(ViewP _ _) _ =
   pure (False, Exception $ "View pattern " ++ pprint pat ++ " is not supported")
 
+
+patMatch' :: Pat -> Exp -> S.StateT Env IO (Bool, EitherNone Exp)
+patMatch' p exp = do
+  env <- S.get
+  let expReplaced = replaceVars exp (M.toList (fst env))
+  if expReplaced /= exp
+    then patMatch p expReplaced
+    else do
+      expWHNF <- toWHNF exp
+      case expWHNF of
+        None -> do
+          exp' <- step exp
+          case exp' of
+            Value v -> pure (True, Value v)
+            x -> pure (False, x)
+        Value v -> patMatch p v
+        x -> pure (False, x)
 
 replaceVars :: Exp -> [(Name, Exp)] -> Exp
 replaceVars = foldl (\exp (Name (OccName s) _, e) -> replaceVar exp s e)
@@ -417,10 +409,10 @@ processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = 
 patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO (Bool, EitherNone Exp)
 patsMatch hexp (e : exps) (p : pats) = do
   originEnv <- S.get
-  rv <- patMatch' p e
+  rv <- patMatch p e
   case rv of
     (True, None) -> patsMatch (AppE hexp e) exps pats
-    (_, Value v) -> pure (False, makeAppE (hexp : v : exps))
+    (b, Value v) -> pure (b, makeAppE (hexp : v : exps))
     x -> do
       S.put originEnv
       pure x
@@ -473,7 +465,7 @@ evaluateExp' qexp qdec = do
 
     nextStep :: EitherNone Exp -> StateExp
     nextStep ene@(Value e) = do
-      x <- niceOutputPrint ene
+      niceOutputPrint ene
       ene1 <- step e
       nextStep ene1
     nextStep None = do
@@ -483,5 +475,5 @@ evaluateExp' qexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err."] . pack
 
