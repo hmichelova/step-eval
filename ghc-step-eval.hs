@@ -85,7 +85,7 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         Just v -> applyExp v exps
         Nothing -> do
           let decs = getDecs x False env
-          processDecs hexp exps decs
+          processDecs hexp exps decs False
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
       enexp' <- step exp
@@ -134,9 +134,7 @@ step ie@(InfixE me1 exp me2) = do
               else do
                 list <- joinList ie
                 case list of
-                  None -> do
-                    env <- S.get
-                    liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
+                  None -> evaluateInfixE ie
                   x -> pure x
             Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
         Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
@@ -156,6 +154,15 @@ step ie@(InfixE me1 exp me2) = do
         Value (ListE xs) -> pure $ Value $ ListE (e1 : xs)
         x -> pure x
     joinList e = pure None
+
+    evaluateInfixE :: Exp -> StateExp
+    evaluateInfixE (InfixE (Just e1) (VarE x) (Just e2)) = do
+      env <- S.get
+      let decs = getDecs x False env
+      processDecs exp [e1, e2] decs True
+    evaluateInfixE ei = do
+      env <- S.get
+      liftIO $ evalInterpreter $ replaceVars ie $ getVarList env
 
 step (ParensE e) = do
   e' <- step e
@@ -381,14 +388,16 @@ getName :: Exp -> String
 getName (VarE (Name (OccName n) _)) = n
 getName _ = error "Given expression is not variable expression"
 
-processDecs :: Exp -> [Exp] -> [Dec] -> StateExp
-processDecs hexp [exp1, exp2] [] = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
-processDecs hexp exps [] = let appE = makeAppE (hexp : exps) in
+processDecs :: Exp -> [Exp] -> [Dec] -> Bool -> StateExp
+processDecs hexp [exp1, exp2] [] False = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
+processDecs hexp exps [] _ = do
+  let appE = makeAppE (hexp : exps)
+  env <- S.get
   case appE of
-    Value v -> liftIO $ evalInterpreter v
+    Value v -> liftIO $ evalInterpreter $ replaceVars v $ getVarList env
     x -> pure x
-processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
-processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) = do
+processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
+processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
   if length exps /= length pats
     then pure $ Exception "Wrong number of arguments in function ..."
     else do
@@ -397,14 +406,14 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
   where
     changeOrContinue :: (Bool, EitherNone Exp) -> StateExp
     changeOrContinue (_, Exception e) = pure $ Exception e
-    changeOrContinue (False, None) = processDecs hexp exps ((FunD n clauses) : decs)
+    changeOrContinue (False, None) = processDecs hexp exps ((FunD n clauses) : decs) b
     changeOrContinue (True, None) = do
       env <- S.get
       S.put $ insertDec whereDec env
       pure $ Value e
     changeOrContinue (_, changedValue) = pure changedValue
 
-processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) = pure $ Exception "Guards are not supported"
+processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ = pure $ Exception "Guards are not supported"
 
 patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO (Bool, EitherNone Exp)
 patsMatch hexp (e : exps) (p : pats) = do
