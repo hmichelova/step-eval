@@ -3,7 +3,6 @@ module DataTypes where
 import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
-import qualified Data.Map as M
 import qualified Control.Monad.Trans.State as S
 
 data EitherNone a = Exception String
@@ -29,24 +28,34 @@ instance Monad EitherNone where
 
 type IOEitherNone a = IO (EitherNone a)
 
-type Env = (M.Map Name Exp, [Dec])
+type Env = (Dictionary, [Dec])
 
 type StateExp = S.StateT Env IO (EitherNone Exp)
 
+type Dictionary = [(Name, Exp)]
+
+type Rename = [(Name, Name)]
+
+data PatternMatch = PMatch Rename
+                  | PNomatch
+                  | PStep Exp
+                  | PException String
+                    deriving (Eq, Show)
+
 emptyEnv :: Env
-emptyEnv = (M.empty, [])
+emptyEnv = ([], [])
 
 setDec :: [Dec] -> Env -> Env
 setDec d (m, _) = (m, d)
 
 insertVar :: Name -> Exp -> Env -> Env
-insertVar n exp (m, d) = (M.insert n exp m, d)
+insertVar n exp (m, d) = ((n, exp) : m, d)
 
 insertDec :: [Dec] -> Env -> Env
 insertDec decs (m, d) = (m, decs ++ d)
 
 getVar :: Name -> Env -> Maybe Exp
-getVar n (m, _) = M.lookup n m
+getVar n (m, _) = lookup n m
 
 getDecs :: Name -> Bool -> Env -> [Dec]
 getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
@@ -56,6 +65,12 @@ getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
     theSameName (FunD (Name (OccName name) _) _) = n == name
     theSameName _             = False
 
-getVarList :: Env -> [(Name, Exp)]
-getVarList (m, _) = M.toList m
+getVars :: Env -> Dictionary
+getVars = fst
 
+pprintDictionary :: Dictionary -> String
+pprintDictionary d = pprintList $ d
+  where
+    pprintList :: [(Name, Exp)] -> String
+    pprintList [] = ""
+    pprintList ((n, e) : xs) = pprint n ++ " -> " ++ pprint e ++ "\n" ++ pprintList xs
