@@ -243,10 +243,10 @@ patMatch (TupP ps) (TupE es) = if length ps /= length es
     patMatchTup (p : pats) (Just e : exps) = do
       rv <- patMatch p e
       case rv of
-        PMatch dic -> do
+        PMatch rename -> do
           rv1 <- patMatchTup pats exps
           case rv1 of
-            PMatch dic1 -> pure $ PMatch $ dic ++ dic1
+            PMatch rename1 -> pure $ PMatch $ rename ++ rename1
             PStep (TupE exps') -> pure $ PStep $ TupE $ Just e : exps'
             x -> pure x
         PStep v -> pure $ PStep $ TupE $ Just v : exps
@@ -274,13 +274,13 @@ patMatch p@(ConP np _ _) exp = patMatch' p exp
 patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
   rv <- patMatch (ConP np [] []) exp
   case rv of
-    PMatch dic -> do
+    PMatch rename -> do
       rv1 <- patMatch p1 e1
       case rv1 of
-        PMatch dic1 -> do
+        PMatch rename1 -> do
           rv2 <- patMatch p2 e2
           case rv2 of
-            PMatch dic2 -> pure $ PMatch $ dic ++ dic1 ++ dic2
+            PMatch rename2 -> pure $ PMatch $ rename ++ rename1 ++ rename2
             PStep v -> pure $ PStep $ InfixE (Just e1) exp (Just v)
             x -> pure x
         PStep v -> pure $ PStep $ InfixE (Just v) exp (Just e2)
@@ -309,11 +309,11 @@ patMatch pat@(BangP _) _ =
 patMatch (AsP n p) exp = do
   rv <- patMatch p exp
   case rv of
-    PMatch dic -> do
+    PMatch rename -> do
       env <- S.get
       name <- liftIO $ newName $ getName n
       S.put $ insertVar name (replaceVars exp (getVars env) id) env -- TODO rewrite
-      pure $ PMatch $ dic ++ [(n, name)]
+      pure $ PMatch $ rename ++ [(n, name)]
     x -> pure x
 
 patMatch WildP _ = pure $ PMatch []
@@ -330,10 +330,10 @@ patMatch (ListP ps) (ListE es) = if length ps /= length es
     checkLists (p : pats) (e : exps) = do
       rv <- patMatch p e
       case rv of
-        PMatch dic -> do
+        PMatch rename -> do
           rv1 <- checkLists pats exps
           case rv1 of
-            PMatch dic1 -> pure $ PMatch $ dic ++ dic1
+            PMatch rename1 -> pure $ PMatch $ rename ++ rename1
             PStep (ListE exps') -> pure $ PStep $ ListE $ e : exps'
             x -> pure x
         PStep v -> pure $ PStep $ ListE $ v : exps
@@ -370,7 +370,7 @@ matched (Value v) = PStep v
 matched (Exception e) = PException e
 
 replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
-replaceVars exp dic f = foldl (\exp (n, e) -> replaceVar exp n e f) exp dic
+replaceVars exp rename f = foldl (\exp (n, e) -> replaceVar exp n e f) exp rename
 
 replaceVar :: Exp -> Name -> a -> (a -> Exp) -> Exp
 replaceVar exp@(VarE name) n e f = if name == n then f e else exp
@@ -411,10 +411,10 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
   where
     changeOrContinue :: PatternMatch -> StateExp
     changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
-    changeOrContinue (PMatch dic) = do
+    changeOrContinue (PMatch rename) = do
       env <- S.get
-      S.put $ insertDec whereDec env -- TODO rename by dic
-      pure $ Value $ replaceVars e dic VarE
+      S.put $ insertDec whereDec env -- TODO rename by rename
+      pure $ Value $ replaceVars e rename VarE
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
 
@@ -425,10 +425,10 @@ patsMatch hexp (e : exps) (p : pats) = do
   originEnv <- S.get
   rv <- patMatch p e
   case rv of
-    PMatch dic -> do
+    PMatch rename -> do
       rv1 <- patsMatch (AppE hexp e) exps pats
       case rv1 of
-        PMatch dic1 -> pure $ PMatch $ dic ++ dic1
+        PMatch rename1 -> pure $ PMatch $ rename ++ rename1
         x -> pure x
     PStep v -> pure $ matched $ makeAppE (hexp : v : exps)
     x -> do
