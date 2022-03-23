@@ -161,7 +161,7 @@ step ie@(InfixE me1 exp me2) = do
       processDecs exp [e1, e2] decs True
     evaluateInfixE ei = do
       env <- S.get
-      liftIO $ evalInterpreter $ replaceVars ie $ getVars env
+      liftIO $ evalInterpreter $ replaceVars ie (getVars env) id
 
 step (ParensE e) = do
   e' <- step e
@@ -312,7 +312,7 @@ patMatch (AsP n p) exp = do
     PMatch dic -> do
       env <- S.get
       name <- liftIO $ newName $ getName n
-      S.put $ insertVar name (replaceVars exp (getVars env)) env -- TODO rewrite
+      S.put $ insertVar name (replaceVars exp (getVars env) id) env -- TODO rewrite
       pure $ PMatch $ dic ++ [(n, name)]
     x -> pure x
 
@@ -352,7 +352,7 @@ patMatch pat@(ViewP _ _) _ =
 patMatch' :: Pat -> Exp -> S.StateT Env IO PatternMatch
 patMatch' p exp = do
   env <- S.get
-  let expReplaced = replaceVars exp $ getVars env
+  let expReplaced = replaceVars exp (getVars env) id
   if expReplaced /= exp
     then patMatch p expReplaced
     else do
@@ -369,49 +369,26 @@ matched None = PNomatch
 matched (Value v) = PStep v
 matched (Exception e) = PException e
 
-replaceVars :: Exp -> Dictionary -> Exp
-replaceVars exp dic = foldl (\exp (n, e) -> replaceVar exp n e) exp dic
+replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
+replaceVars exp dic f = foldl (\exp (n, e) -> replaceVar exp n e f) exp dic
 
-replaceVar :: Exp -> Name -> Exp -> Exp
-replaceVar exp@(VarE name) n e = if name == n then e else exp
-replaceVar exp@(ConE _) _ _ = exp
-replaceVar exp@(LitE _) _ _ = exp
-replaceVar (AppE e1 e2) n e = AppE (replaceVar e1 n e) (replaceVar e2 n e)
-replaceVar (InfixE me1 exp me2) n e =
-  InfixE (maybe Nothing (\e1 -> Just (replaceVar e1 n e)) me1)
-         (replaceVar exp n e)
-         (maybe Nothing (\e2 -> Just (replaceVar e2 n e)) me2)
-replaceVar (ParensE exp) n e = ParensE (replaceVar exp n e)
-replaceVar (LamE pats exp) n e = undefined -- TODO
-replaceVar (TupE mexps) n e = TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' n e))) mexps
-replaceVar (CondE b t f) n e = CondE (replaceVar b n e) (replaceVar t n e) (replaceVar f n e)
-replaceVar (ListE xs) n e = ListE $ map (\exp -> replaceVar exp n e) xs
-replaceVar exp _ _ = exp -- TODO
-
-replaceNames :: Exp -> Rename -> Exp
-replaceNames = foldl (\e (n1, n2) -> replaceName e n1 n2)
-
-replaceName :: Exp -> Name -> Name -> Exp
-replaceName exp@(VarE name) n1 n2 = if name == n1 then VarE n2 else exp
-replaceName exp@(ConE _) _ _ = exp
-replaceName exp@(LitE _) _ _ = exp
-replaceName (AppE e1 e2) n1 n2 = AppE (replaceName e1 n1 n2) (replaceName e2 n1 n2)
-replaceName (InfixE me1 exp me2) n1 n2 =
-  InfixE (maybe Nothing (\e1 -> Just (replaceName e1 n1 n2)) me1)
-         (replaceName exp n1 n2)
-         (maybe Nothing (\e2 -> Just (replaceName e2 n1 n2)) me2)
-replaceName (ParensE exp) n1 n2 = ParensE $ replaceName exp n1 n2
-replaceName (LamE pats exp) n1 n2 = undefined -- TODO
-replaceName (TupE mexps) n1 n2 =
-  TupE $ map (maybe Nothing (\e' -> Just (replaceName e' n1 n2))) mexps
-replaceName (CondE b t f) n1 n2 =
-  CondE (replaceName b n1 n2) (replaceName t n1 n2) (replaceName f n1 n2)
-replaceName (ListE xs) n1 n2 = ListE $ map (\exp -> replaceName exp n1 n2) xs
-replaceName exp _ _ = exp -- TODO
-
-isVar :: Exp -> Bool
-isVar (VarE _) = True
-isVar _        = False
+replaceVar :: Exp -> Name -> a -> (a -> Exp) -> Exp
+replaceVar exp@(VarE name) n e f = if name == n then f e else exp
+replaceVar exp@(ConE _) _ _ _ = exp
+replaceVar exp@(LitE _) _ _ _ = exp
+replaceVar (AppE e1 e2) n e f = AppE (replaceVar e1 n e f) (replaceVar e2 n e f)
+replaceVar (InfixE me1 exp me2) n e f =
+  InfixE (maybe Nothing (\e1 -> Just (replaceVar e1 n e f)) me1)
+         (replaceVar exp n e f)
+         (maybe Nothing (\e2 -> Just (replaceVar e2 n e f)) me2)
+replaceVar (ParensE exp) n e f = ParensE (replaceVar exp n e f)
+replaceVar (LamE pats exp) n e f = undefined -- TODO
+replaceVar (TupE mexps) n e f =
+  TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' n e f))) mexps
+replaceVar (CondE b t f) n e fun =
+  CondE (replaceVar b n e fun) (replaceVar t n e fun) (replaceVar f n e fun)
+replaceVar (ListE xs) n e f = ListE $ map (\exp -> replaceVar exp n e f) xs
+replaceVar exp _ _ _ = exp -- TODO
 
 getName :: Name -> String
 getName (Name (OccName n) _) = n
@@ -422,7 +399,7 @@ processDecs hexp exps [] _ = do
   let appE = makeAppE (hexp : exps)
   env <- S.get
   case appE of
-    Value v -> liftIO $ evalInterpreter $ replaceVars v $ getVars env
+    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env) id
     x -> pure x
 processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
 processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
@@ -437,7 +414,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue (PMatch dic) = do
       env <- S.get
       S.put $ insertDec whereDec env -- TODO rename by dic
-      pure $ Value $ replaceNames e dic
+      pure $ Value $ replaceVars e dic VarE
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
 
@@ -502,7 +479,7 @@ evaluateExp' qexp qdec = do
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
-      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e $ getVars env
+      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env) id
 
     nextStep :: EitherNone Exp -> StateExp
     nextStep ene@(Value e) = do

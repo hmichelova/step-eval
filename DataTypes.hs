@@ -28,15 +28,13 @@ instance Monad EitherNone where
 
 type IOEitherNone a = IO (EitherNone a)
 
-type Env = (Dictionary, [Dec])
+type Env = (Dictionary Exp, [Dec])
 
 type StateExp = S.StateT Env IO (EitherNone Exp)
 
-type Dictionary = [(Name, Exp)]
+type Dictionary a = [(Name, a)]
 
-type Rename = [(Name, Name)]
-
-data PatternMatch = PMatch Rename
+data PatternMatch = PMatch (Dictionary Name)
                   | PNomatch
                   | PStep Exp
                   | PException String
@@ -65,12 +63,10 @@ getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
     theSameName (FunD (Name (OccName name) _) _) = n == name
     theSameName _             = False
 
-getVars :: Env -> Dictionary
+getVars :: Env -> Dictionary Exp
 getVars = fst
 
-pprintDictionary :: Dictionary -> String
-pprintDictionary d = pprintList $ d
-  where
-    pprintList :: [(Name, Exp)] -> String
-    pprintList [] = ""
-    pprintList ((n, e) : xs) = pprint n ++ " -> " ++ pprint e ++ "\n" ++ pprintList xs
+pprintDictionary :: Ppr a => Dictionary a -> String
+pprintDictionary [] = ""
+pprintDictionary ((n, e) : xs) = pprint n ++ " -> " ++ pprint e ++ "\n" ++ pprintDictionary xs
+
