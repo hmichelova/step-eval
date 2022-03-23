@@ -369,6 +369,40 @@ matched None = PNomatch
 matched (Value v) = PStep v
 matched (Exception e) = PException e
 
+replaceDecs :: [Dec] -> Dictionary Name -> [Dec]
+replaceDecs decs rename = map replaceDec decs
+  where
+    replaceDec :: Dec -> Dec
+    replaceDec (FunD name clauses) = FunD name $ map replaceClauses clauses
+    replaceDec dec = dec
+
+    replaceClauses :: Clause -> Clause
+    replaceClauses (Clause pats body decs) =
+      let rename' = filter (\(_, n) -> all (notInPats n) pats) rename in
+        Clause pats (replaceBody body rename') (replaceDecs decs rename')
+      where
+        notInPats :: Name -> Pat -> Bool
+        notInPats name (VarP n) = n /= name
+        notInPats name (TupP ps) = all (notInPats name) ps
+        notInPats name (UnboxedTupP ps) = all (notInPats name) ps
+        notInPats name (UnboxedSumP p _ _) = notInPats name p
+        notInPats name (ConP n _ ps) = name /= n && all (notInPats name) ps
+        notInPats name (InfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
+        notInPats name (UInfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
+        notInPats name (ParensP p) = notInPats name p
+        notInPats name (TildeP p) = notInPats name p
+        notInPats name (BangP p) = notInPats name p
+        notInPats name (AsP n p) = name /= n && notInPats name p
+        notInPats name (RecP n _) = name /= n
+        notInPats name (ListP ps) = all (notInPats name) ps
+        notInPats name (SigP p _) = notInPats name p
+        notInPats name (ViewP _ p) = notInPats name p
+        notInPats _ _ = True
+
+    replaceBody :: Body -> Dictionary Name -> Body
+    replaceBody (NormalB exp) rename = NormalB $ replaceVars exp rename VarE
+    replaceBody b _ = b -- TODO guards
+
 replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
 replaceVars exp rename f = foldl (\exp (n, e) -> replaceVar exp n e f) exp rename
 
@@ -413,7 +447,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
     changeOrContinue (PMatch rename) = do
       env <- S.get
-      S.put $ insertDec whereDec env -- TODO rename by rename
+      S.put $ insertDec (replaceDecs whereDec rename) env
       pure $ Value $ replaceVars e rename VarE
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
