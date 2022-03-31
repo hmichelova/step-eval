@@ -105,13 +105,25 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         makeListArgsInfixE (Just e1) Nothing e = [e1, e]
         makeListArgsInfixE (Just e1) (Just e2) e = [e1, e2, e]
 
-    applyExp (UnboundVarE _) _ = undefined
+    applyExp (LamE [] exp) [] = step exp
+    applyExp e@(LamE [] _) exps = pure $ Exception $
+      "There is no patterns in lambda expression " ++ pprint e ++
+      " for arguments " ++ pprint exps
+    applyExp e@(LamE _ _) [] = pure $ Exception $
+      "There is no argument for lambda expression " ++ pprint e
+    applyExp le@(LamE (pat : pats) exp) (e : exps) = do
+      pm <- patMatch pat e
+      case pm of
+        PMatch rename -> let body = replaceVars exp rename VarE in
+          pure $ makeAppE ((if null pats then body else LamE pats body) : exps)
+        PNomatch -> pure $ Exception $
+          "No pattern match for pattern " ++ pprint pat ++
+          " for expression " ++ pprint e ++
+          " in lambda expression " ++ pprint le
+        PStep v -> pure $ makeAppE (le : v : exps)
+        PException ex -> pure $ Exception ex
 
-    applyExp hexp exps = do
-      nexp1' <- step hexp
-      case nexp1' of
-        Value exp1' -> pure $ makeAppE (exp1' : exps)
-        x           -> pure x
+    applyExp hexp exps = pure None
 
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
@@ -169,7 +181,8 @@ step (ParensE e) = do
     Value v -> pure $ Value $ ParensE v
     x -> pure x
 
-step (LamE pats exp) = pure $ Exception "Lambda expressions are not supported yet"
+step (LamE [] exp) = step exp
+step (LamE pats exp) = pure None
 
 step (TupE []) = pure None
 step exp@(TupE (me : exps)) = do
@@ -416,7 +429,9 @@ replaceVar (InfixE me1 exp me2) n e f =
          (replaceVar exp n e f)
          (maybe Nothing (\e2 -> Just (replaceVar e2 n e f)) me2)
 replaceVar (ParensE exp) n e f = ParensE (replaceVar exp n e f)
-replaceVar (LamE pats exp) n e f = undefined -- TODO
+replaceVar le@(LamE pats exp) n e f = if elem n (getNamesFromPats pats)
+  then le
+  else LamE pats $ replaceVar exp n e f
 replaceVar (TupE mexps) n e f =
   TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' n e f))) mexps
 replaceVar (CondE b t f) n e fun =
@@ -493,6 +508,28 @@ toWHNF e@(VarE x) = do
         x' -> pure $ x'
     Nothing -> pure None
 toWHNF exp = pure None
+
+getNamesFromPats :: [Pat] -> [Name]
+getNamesFromPats = foldl (\names pat -> names ++ getNamesFromPat pat) []
+
+getNamesFromPat :: Pat -> [Name]
+getNamesFromPat (LitP _) = []
+getNamesFromPat (VarP n) = [n]
+getNamesFromPat (TupP ps) = getNamesFromPats ps
+getNamesFromPat (UnboxedTupP _) = []
+getNamesFromPat (UnboxedSumP _ _ _) = []
+getNamesFromPat (ConP _ _ ps) = getNamesFromPats ps
+getNamesFromPat (InfixP _ _ _) = []
+getNamesFromPat (UInfixP _ _ _) = []
+getNamesFromPat (ParensP p) = getNamesFromPat p
+getNamesFromPat (TildeP _) = []
+getNamesFromPat (BangP _) = []
+getNamesFromPat (AsP n p) = n : getNamesFromPat p
+getNamesFromPat WildP = []
+getNamesFromPat (RecP _ _) = []
+getNamesFromPat (ListP ps) = getNamesFromPats ps
+getNamesFromPat (SigP _ _) = []
+getNamesFromPat (ViewP _ _) = []
 
 evaluateExp :: Q Exp -> IO ()
 evaluateExp = flip evaluateExp' funcs
