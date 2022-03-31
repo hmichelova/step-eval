@@ -304,7 +304,9 @@ patMatch pat@(UnboxedSumP _ _ _) _ =
 -- TODO add (ConP np _ (x : xs)) - for user defined data types
 patMatch (ConP np _ []) (ConE ne) = pure $ if np == ne then PMatch [] else PNomatch
 patMatch (ConP np _ []) (ListE []) = pure $ if np == '[] then PMatch [] else PNomatch
+patMatch (ConP np _ []) (LitE (StringL "")) = pure $ if np == '[] then PMatch [] else PNomatch
 patMatch (ConP np _ []) (ListE (_ : _)) = pure PNomatch
+patMatch (ConP np _ []) (LitE (StringL (_ : _))) = pure PNomatch
 patMatch p@(ConP np _ []) exp@(InfixE me1 (ConE n) me2) = if n == '(:) && np == '[]
   then pure PNomatch
   else patMatch' p exp
@@ -326,7 +328,24 @@ patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
         x -> pure x
     PStep v -> pure $ PStep $ InfixE (Just e1) v (Just e2)
     x -> pure x
+patMatch (InfixP p1 np p2) (LitE (StringL (s : sx))) = if np /= '(:)
+  then pure PNomatch
+  else do
+    rv1 <- patMatch p1 (LitE (CharL s))
+    case rv1 of
+      PMatch rename1 -> do
+        rv2 <- patMatch p2 (LitE (StringL sx))
+        case rv2 of
+          PMatch rename2 -> pure $ PMatch $ rename1 ++ rename2
+          PStep (LitE (StringL v)) -> pure $ PStep $ LitE $ StringL $ s : v
+          x -> pure x
+      PStep (LitE (CharL v)) -> pure $ PStep $ LitE $ StringL $ v : sx
+      PStep (LitE (StringL v)) -> pure $ PStep $ LitE $ StringL $ v ++ sx
+      x -> pure x
 patMatch p@(InfixP _ np _) exp@(ConE ne) = if np == '(:) && ne == '[]
+  then pure PNomatch
+  else patMatch' p exp
+patMatch p@(InfixP _ np _) exp@(LitE (StringL "")) = if np == '(:)
   then pure PNomatch
   else patMatch' p exp
 patMatch p@(InfixP _ np _) exp@(ListE []) = if np == '(:)
