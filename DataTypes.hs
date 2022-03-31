@@ -55,14 +55,6 @@ insertDec decs (m, d) = (m, decs ++ d)
 getVar :: Name -> Env -> Maybe Exp
 getVar n (m, _) = lookup n m
 
-getDecs :: Name -> Bool -> Env -> [Dec]
-getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
-  where
-    theSameName :: Dec -> Bool
-    theSameName (SigD (Name (OccName name) _) _) = sign && n == name
-    theSameName (FunD (Name (OccName name) _) _) = n == name
-    theSameName _             = False
-
 getVars :: Env -> Dictionary Exp
 getVars = fst
 
