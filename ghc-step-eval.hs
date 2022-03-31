@@ -51,7 +51,18 @@ step (VarE x) = do
           pure $ Value $ (VarE x)
     Nothing -> do
       let decs = getDecs x False env
-      processDecs (VarE x) [] decs False
+      if null decs
+        then pure None
+        else do
+          exp' <- processDecs (VarE x) [] decs False
+          case exp' of
+            Value v -> do
+              S.put $ insertVar x v env
+              pure $ Value $ VarE x
+            Exception e -> if e == "Wrong number of arguments in function " ++ pprint (VarE x)
+              then pure None
+              else pure exp'
+            x -> pure exp'
 
 step (ConE _) = pure None
 
@@ -201,7 +212,10 @@ step (CondE b t f) = do
       otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
     Value v -> pure $ Value $ CondE v t f
 
-step (LetE decs exp) = pure $ Exception "Let expressions are not supported yet"
+step (LetE decs exp) = do
+  env <- S.get
+  S.put $ setDec decs env
+  pure $ Value exp
 
 step (ListE []) = pure None
 step exp@(ListE (e : exps)) = do
@@ -400,7 +414,7 @@ processDecs hexp exps [] _ = do
 processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
 processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
   if length exps /= length pats
-    then pure $ Exception "Wrong number of arguments in function ..."
+    then pure $ Exception $ "Wrong number of arguments in function " ++ pprint hexp
     else do
       exp' <- patsMatch hexp exps pats
       changeOrContinue exp'
@@ -415,6 +429,21 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue (PException e) = pure $ Exception e
 
 processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ = pure $ Exception "Guards are not supported"
+
+processDecs hexp [] (ValD pat (NormalB e) whereDec : decs) b = do
+  m <- patMatch pat e
+  changeOrContinue m
+  where
+    changeOrContinue :: PatternMatch -> StateExp
+    changeOrContinue PNomatch = processDecs hexp [] decs b
+    changeOrContinue (PMatch rename) = do
+      env <- S.get
+      S.put $ insertDec (replaceDecs whereDec rename) env
+      pure $ Value $ replaceVars e rename VarE
+    changeOrContinue (PStep v) = pure $ Value v
+    changeOrContinue (PException e) = pure $ Exception e
+
+processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Exception "Guards are not supported"
 
 toWHNF :: Exp -> StateExp
 toWHNF (CompE stmts) = undefined -- TODO fix

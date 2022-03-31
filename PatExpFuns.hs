@@ -11,6 +11,7 @@ getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
     theSameName :: Dec -> Bool
     theSameName (SigD (Name (OccName name) _) _) = sign && n == name
     theSameName (FunD (Name (OccName name) _) _) = n == name
+    theSameName (ValD pat _ _) = any (\(Name (OccName name) _) -> n == name) $ getNamesFromPat pat
     theSameName _             = False
 
 isNone :: EitherNone Exp -> Bool
