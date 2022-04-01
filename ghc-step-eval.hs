@@ -9,7 +9,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not )
+import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Control.Monad.Trans.State as S
@@ -47,7 +47,7 @@ step (VarE x) = do
         None -> pure None
         Value v -> do
           env' <- S.get
-          S.put $ insertVar x v env'
+          S.put $ updateOrInsertVar x v env'
           pure $ Value $ (VarE x)
     Nothing -> do
       let decs = getDecs x False env
@@ -229,7 +229,21 @@ step exp@(ListE (e : exps)) = do
         x -> pure x
     Value v -> pure $ Value $ ListE $ v : exps
     x -> pure x
-  
+
+step exp@(ArithSeqE (FromR _)) = toWHNF exp
+step exp@(ArithSeqE (FromThenR _ _)) = toWHNF exp
+step exp@(ArithSeqE (FromToR fr to)) = do
+  fr' <- step fr
+  case fr' of
+    None -> do
+      to' <- step to
+      case to' of
+        None -> toWHNF exp
+        Value v -> pure $ Value $ ArithSeqE (FromToR fr v)
+        x -> pure x
+    Value v -> pure $ Value $ ArithSeqE (FromToR v to)
+    x -> pure x
+
 step exp = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
 stepMaybe :: Maybe Exp -> StateExp
@@ -466,7 +480,32 @@ processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Excep
 
 toWHNF :: Exp -> StateExp
 toWHNF (CompE stmts) = undefined -- TODO fix
-toWHNF (ArithSeqE range) = undefined -- TODO fix
+toWHNF (ArithSeqE (FromR e)) = do
+  env <- S.get
+  name <- liftIO $ newName "arithSeqFrom"
+  S.put $ insertVar name e env
+  pure $ Value $ InfixE (Just (VarE name)) (ConE '(:)) $
+    Just $ ArithSeqE $ FromR $ InfixE (Just (VarE name)) (ConE '(+)) (Just (LitE (IntegerL 1)))
+toWHNF (ArithSeqE (FromThenR fr th)) = do
+  env <- S.get
+  nFr <- liftIO $ newName "arithSeqFrom"
+  nTh <- liftIO $ newName "arithSeqThen"
+  nNewTh <- liftIO $ newName "arithSeqNewThen"
+  let newThE = InfixE (Just (VarE nTh)) (ConE '(+)) $
+                       Just $ InfixE (Just (VarE nTh)) (ConE '(-)) (Just (VarE nFr))
+  let env' = insertVar nFr fr env
+  let env'' = insertVar nTh th env'
+  S.put $ insertVar nNewTh newThE env''
+  pure $ Value $
+    InfixE (Just (VarE nFr)) (ConE '(:)) $
+            Just $ ArithSeqE $ FromThenR (VarE nTh) newThE
+toWHNF (ArithSeqE (FromToR frE@(LitE (IntegerL fr)) toE@(LitE (IntegerL to))))
+  | fr == to = pure $ Value $ InfixE (Just frE) (ConE '(:)) (Just (ConE '[]))
+  | fr > to = pure $ Value $ ConE '[]
+  | otherwise = pure $ Value $
+     InfixE (Just frE) (ConE '(:)) $ Just $
+             ArithSeqE $ FromToR (InfixE (Just frE) (ConE '(+)) (Just (LitE (IntegerL 1)))) toE
+toWHNF (ArithSeqE e) = pure $ None
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
 toWHNF e@(VarE x) = do
   env <- S.get

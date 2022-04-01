@@ -71,5 +71,16 @@ funcs = [d|
   not True  = False
   not False = True
 
+  takeWhile :: (a -> Bool) -> [a] -> [a]
+  takeWhile _ [] = []
+  takeWhile p (x : xs) = if p x
+    then x : takeWhile p xs
+    else []
+
+  dropWhile :: (a -> Bool) -> [a] -> [a]
+  dropWhile _ [] = []
+  dropWhile p xs@(x : xs') = if p x
+    then dropWhile p xs'
+    else xs
   |]
 

@@ -49,6 +49,11 @@ setDec d (m, _) = (m, d)
 insertVar :: Name -> Exp -> Env -> Env
 insertVar n exp (m, d) = ((n, exp) : m, d)
 
+updateOrInsertVar :: Name -> Exp -> Env -> Env
+updateOrInsertVar n exp (m, d) = case lookup n m of
+  Nothing -> ((n, exp) : m, d)
+  Just v -> (map (\(n', e') -> if n' == n then (n, exp) else (n', e')) m, d)
+
 insertDec :: [Dec] -> Env -> Env
 insertDec decs (m, d) = (m, decs ++ d)
 

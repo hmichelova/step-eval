@@ -86,7 +86,18 @@ replaceVar (TupE mexps) n e f =
   TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' n e f))) mexps
 replaceVar (CondE b t f) n e fun =
   CondE (replaceVar b n e fun) (replaceVar t n e fun) (replaceVar f n e fun)
+-- TODO let
 replaceVar (ListE xs) n e f = ListE $ map (\exp -> replaceVar exp n e f) xs
+replaceVar (ArithSeqE range) n e f = ArithSeqE $ replaceVarRange range
+  where
+    replaceVarRange :: Range -> Range
+    replaceVarRange (FromR fr) = FromR $ replaceVar fr n e f
+    replaceVarRange (FromThenR fr th) = FromThenR (replaceVar fr n e f) $ replaceVar th n e f
+    replaceVarRange (FromToR fr to) = FromToR (replaceVar fr n e f) $ replaceVar to n e f
+    replaceVarRange (FromThenToR fr th to) = FromThenToR (replaceVar fr n e f)
+                                                         (replaceVar th n e f)
+                                                         (replaceVar to n e f)
+    
 replaceVar exp _ _ _ = exp -- TODO
 
 getName :: Name -> String
