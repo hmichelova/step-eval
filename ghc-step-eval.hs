@@ -243,6 +243,22 @@ step exp@(ArithSeqE (FromToR fr to)) = do
         x -> pure x
     Value v -> pure $ Value $ ArithSeqE (FromToR v to)
     x -> pure x
+step exp@(ArithSeqE (FromThenToR fr th to)) = do
+  fr' <- step fr
+  case fr' of
+    None -> do
+      th' <- step th
+      case th' of
+        None -> do
+          to' <- step to
+          case to' of
+            None -> toWHNF exp
+            Value v -> pure $ Value $ ArithSeqE (FromThenToR fr th v)
+            x -> pure x
+        Value v -> pure $ Value $ ArithSeqE (FromThenToR fr v to)
+        x -> pure x
+    Value v -> pure $ Value $ ArithSeqE (FromThenToR v th to)
+    x -> pure x
 
 step exp = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
@@ -505,6 +521,17 @@ toWHNF (ArithSeqE (FromToR frE@(LitE (IntegerL fr)) toE@(LitE (IntegerL to))))
   | otherwise = pure $ Value $
      InfixE (Just frE) (ConE '(:)) $ Just $
              ArithSeqE $ FromToR (InfixE (Just frE) (ConE '(+)) (Just (LitE (IntegerL 1)))) toE
+toWHNF (ArithSeqE (FromThenToR frE@(LitE (IntegerL fr)) thE@(LitE (IntegerL th)) toE@(LitE (IntegerL to))))
+  | (signum (th - to) /= signum (fr - to) || fr == to) && th /= to =
+     pure $ Value $ InfixE (Just frE) (ConE '(:)) (Just (ConE '[]))
+  | abs (th - to) > abs (fr - to) = pure $ Value $ ConE '[]
+  | otherwise = pure $ Value $
+     InfixE (Just frE) (ConE '(:)) $ Just $
+             ArithSeqE $ FromThenToR
+               thE
+               (InfixE (Just thE) (ConE '(+)) (Just (InfixE (Just thE) (ConE '(-)) (Just frE))))
+               toE
+
 toWHNF (ArithSeqE e) = pure $ None
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
 toWHNF e@(VarE x) = do
