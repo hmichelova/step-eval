@@ -37,6 +37,9 @@ replaceDecs decs rename = map replaceDec decs
   where
     replaceDec :: Dec -> Dec
     replaceDec (FunD name clauses) = FunD name $ map replaceClauses clauses
+    replaceDec (ValD pat body whereDec) = 
+      let rename' = filter (\(_, n) -> notInPats n pat) rename in
+        ValD pat (replaceBody body rename') (replaceDecs whereDec rename')
     replaceDec dec = dec
 
     replaceClauses :: Clause -> Clause
@@ -44,27 +47,28 @@ replaceDecs decs rename = map replaceDec decs
       let rename' = filter (\(_, n) -> all (notInPats n) pats) rename in
         Clause pats (replaceBody body rename') (replaceDecs decs rename')
       where
-        notInPats :: Name -> Pat -> Bool
-        notInPats name (VarP n) = n /= name
-        notInPats name (TupP ps) = all (notInPats name) ps
-        notInPats name (UnboxedTupP ps) = all (notInPats name) ps
-        notInPats name (UnboxedSumP p _ _) = notInPats name p
-        notInPats name (ConP n _ ps) = name /= n && all (notInPats name) ps
-        notInPats name (InfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
-        notInPats name (UInfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
-        notInPats name (ParensP p) = notInPats name p
-        notInPats name (TildeP p) = notInPats name p
-        notInPats name (BangP p) = notInPats name p
-        notInPats name (AsP n p) = name /= n && notInPats name p
-        notInPats name (RecP n _) = name /= n
-        notInPats name (ListP ps) = all (notInPats name) ps
-        notInPats name (SigP p _) = notInPats name p
-        notInPats name (ViewP _ p) = notInPats name p
-        notInPats _ _ = True
 
     replaceBody :: Body -> Dictionary Name -> Body
     replaceBody (NormalB exp) rename = NormalB $ replaceVars exp rename VarE
     replaceBody b _ = b -- TODO guards
+
+    notInPats :: Name -> Pat -> Bool
+    notInPats name (VarP n) = n /= name
+    notInPats name (TupP ps) = all (notInPats name) ps
+    notInPats name (UnboxedTupP ps) = all (notInPats name) ps
+    notInPats name (UnboxedSumP p _ _) = notInPats name p
+    notInPats name (ConP n _ ps) = name /= n && all (notInPats name) ps
+    notInPats name (InfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
+    notInPats name (UInfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
+    notInPats name (ParensP p) = notInPats name p
+    notInPats name (TildeP p) = notInPats name p
+    notInPats name (BangP p) = notInPats name p
+    notInPats name (AsP n p) = name /= n && notInPats name p
+    notInPats name (RecP n _) = name /= n
+    notInPats name (ListP ps) = all (notInPats name) ps
+    notInPats name (SigP p _) = notInPats name p
+    notInPats name (ViewP _ p) = notInPats name p
+    notInPats _ _ = True
 
 replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
 replaceVars exp rename f = foldl (\exp (n, e) -> replaceVar exp n e f) exp rename
