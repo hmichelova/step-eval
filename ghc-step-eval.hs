@@ -9,7 +9,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile )
+import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Control.Monad.Trans.State as S
@@ -31,7 +31,7 @@ evalInterpreter e = do
       pure $ [| r |]
 
     moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err"]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum"]
 
     replaces :: String -> String
     replaces = unpack . replace "GHC.Types." "" . pack
@@ -230,36 +230,13 @@ step exp@(ListE (e : exps)) = do
     Value v -> pure $ Value $ ListE $ v : exps
     x -> pure x
 
-step exp@(ArithSeqE (FromR _)) = toWHNF exp
-step exp@(ArithSeqE (FromThenR _ _)) = toWHNF exp
-step exp@(ArithSeqE (FromToR fr to)) = do
-  fr' <- step fr
-  case fr' of
-    None -> do
-      to' <- step to
-      case to' of
-        None -> toWHNF exp
-        Value v -> pure $ Value $ ArithSeqE (FromToR fr v)
-        x -> pure x
-    Value v -> pure $ Value $ ArithSeqE (FromToR v to)
-    x -> pure x
-step exp@(ArithSeqE (FromThenToR fr th to)) = do
-  fr' <- step fr
-  case fr' of
-    None -> do
-      th' <- step th
-      case th' of
-        None -> do
-          to' <- step to
-          case to' of
-            None -> toWHNF exp
-            Value v -> pure $ Value $ ArithSeqE (FromThenToR fr th v)
-            x -> pure x
-        Value v -> pure $ Value $ ArithSeqE (FromThenToR fr v to)
-        x -> pure x
-    Value v -> pure $ Value $ ArithSeqE (FromThenToR v th to)
-    x -> pure x
-
+step exp@(ArithSeqE (FromR fr)) = pure $ Value $ AppE (VarE 'enumFrom) fr
+step exp@(ArithSeqE (FromThenR fr th)) = pure $ Value $ AppE (AppE (VarE 'enumFromThen) fr) th
+step exp@(ArithSeqE (FromToR fr to)) = pure $ Value $ AppE (AppE (VarE 'enumFromTo) fr) to
+step exp@(ArithSeqE (FromThenToR fr th to)) =  pure $ Value $
+  AppE (AppE (AppE (VarE 'enumFromThenTo) fr)
+             th)
+       to
 step exp = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
 stepMaybe :: Maybe Exp -> StateExp
@@ -496,43 +473,6 @@ processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Excep
 
 toWHNF :: Exp -> StateExp
 toWHNF (CompE stmts) = undefined -- TODO fix
-toWHNF (ArithSeqE (FromR e)) = do
-  env <- S.get
-  name <- liftIO $ newName "arithSeqFrom"
-  S.put $ insertVar name e env
-  pure $ Value $ InfixE (Just (VarE name)) (ConE '(:)) $
-    Just $ ArithSeqE $ FromR $ InfixE (Just (VarE name)) (ConE '(+)) (Just (LitE (IntegerL 1)))
-toWHNF (ArithSeqE (FromThenR fr th)) = do
-  env <- S.get
-  nFr <- liftIO $ newName "arithSeqFrom"
-  nTh <- liftIO $ newName "arithSeqThen"
-  nNewTh <- liftIO $ newName "arithSeqNewThen"
-  let newThE = InfixE (Just (VarE nTh)) (ConE '(+)) $
-                       Just $ InfixE (Just (VarE nTh)) (ConE '(-)) (Just (VarE nFr))
-  let env' = insertVar nFr fr env
-  let env'' = insertVar nTh th env'
-  S.put $ insertVar nNewTh newThE env''
-  pure $ Value $
-    InfixE (Just (VarE nFr)) (ConE '(:)) $
-            Just $ ArithSeqE $ FromThenR (VarE nTh) newThE
-toWHNF (ArithSeqE (FromToR frE@(LitE (IntegerL fr)) toE@(LitE (IntegerL to))))
-  | fr == to = pure $ Value $ InfixE (Just frE) (ConE '(:)) (Just (ConE '[]))
-  | fr > to = pure $ Value $ ConE '[]
-  | otherwise = pure $ Value $
-     InfixE (Just frE) (ConE '(:)) $ Just $
-             ArithSeqE $ FromToR (InfixE (Just frE) (ConE '(+)) (Just (LitE (IntegerL 1)))) toE
-toWHNF (ArithSeqE (FromThenToR frE@(LitE (IntegerL fr)) thE@(LitE (IntegerL th)) toE@(LitE (IntegerL to))))
-  | (signum (th - to) /= signum (fr - to) || fr == to) && th /= to =
-     pure $ Value $ InfixE (Just frE) (ConE '(:)) (Just (ConE '[]))
-  | abs (th - to) > abs (fr - to) = pure $ Value $ ConE '[]
-  | otherwise = pure $ Value $
-     InfixE (Just frE) (ConE '(:)) $ Just $
-             ArithSeqE $ FromThenToR
-               thE
-               (InfixE (Just thE) (ConE '(+)) (Just (InfixE (Just thE) (ConE '(-)) (Just frE))))
-               toE
-
-toWHNF (ArithSeqE e) = pure $ None
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
 toWHNF e@(VarE x) = do
   env <- S.get
@@ -581,5 +521,5 @@ evaluateExp' qexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum."] . pack
 

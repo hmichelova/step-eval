@@ -82,5 +82,36 @@ funcs = [d|
   dropWhile p xs@(x : xs') = if p x
     then dropWhile p xs'
     else xs
+
+  enumFrom :: Enum a => a -> [a]
+  enumFrom n = n : enumFrom (succ n)
+
+  enumFromThen :: Enum a => a -> a -> [a]
+  enumFromThen n n' = n : n' : worker (f step) (f step n')
+    where
+      worker s v = v : worker s (s v)
+      step = fromEnum n' - fromEnum n
+      f 0 y = y
+      f n y = if n > 0
+        then f (n - 1) (succ y)
+        else f (n + 1) (pred y)
+
+  enumFromTo :: (Ord a, Enum a) => a -> a -> [a]
+  enumFromTo n m = if n <= m 
+    then n : enumFromTo (succ n) m 
+    else []
+
+  enumFromThenTo :: (Ord a, Enum a) => a -> a -> a -> [a]
+  enumFromThenTo n n' m = worker (f step) n m
+    where
+      step = fromEnum n' - fromEnum n
+      f 0 y = y
+      f n y = if n > 0
+        then f (n - 1) (succ y)
+        else f (n + 1) (pred y)
+      worker s v m = if v <= m
+        then v : worker s (s v) m 
+        else []
+
   |]
 
