@@ -69,19 +69,11 @@ step (ConE _) = pure None
 step (LitE _) = pure None
 
 step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
-  appExp hexp exps
+  applyExp hexp exps
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
     getSubExp x                = [x] -- TODO check if correct
-
-    appExp :: Exp -> [Exp] -> StateExp
-    appExp hexp exps = do
-      hexp' <- step hexp
-      case hexp' of
-        Exception e -> pure $ Exception e
-        None -> applyExp hexp exps
-        Value v -> pure $ makeAppE (v : exps)
 
     applyExp :: Exp -> [Exp] -> StateExp
     applyExp hexp@(VarE x) exps = do
@@ -129,7 +121,11 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         PStep v -> pure $ makeAppE (le : v : exps)
         PException ex -> pure $ Exception ex
 
-    applyExp hexp exps = pure None
+    applyExp hexp exps = do
+      hexp' <- step hexp
+      case hexp' of
+        Value v -> pure $ makeAppE (v : exps)
+        x -> pure x
 
     replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
