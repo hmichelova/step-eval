@@ -9,6 +9,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
+import Data.List hiding ( length, take )
 import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
@@ -51,7 +52,12 @@ evalInterpreter e = do
     evalByType "[Char]" s = do
       r <- interpret s (as :: String)
       pure $ [| r |]
-    evalByType t s = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\"" 
+    evalByType t s
+      | isSubsequenceOf "->" t = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\" -- interpreter cannot evaluate functions"
+      | isSubsequenceOf "=>" t = do
+        r <- interpret s (as :: Integer)
+        pure $ [| r |]
+      | otherwise = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\""
 
 
     moduleList :: [ModuleName]
