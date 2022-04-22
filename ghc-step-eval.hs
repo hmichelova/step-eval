@@ -27,8 +27,32 @@ evalInterpreter e = do
   where
     doInterpret s = do
       setImports moduleList
-      r <- interpret s (as :: Integer) -- TODO
+      t <- typeOf s
+      evalByType t s
+
+    evalByType "Integer" s = do
+      r <- interpret s (as :: Integer)
       pure $ [| r |]
+    evalByType "Int" s = do
+      r <- interpret s (as :: Int)
+      pure $ [| r |]
+    evalByType "Num a => a" s = do
+      r <- interpret s (as :: Integer)
+      pure $ [| r |]
+    evalByType "Bool" s = do
+      r <- interpret s (as :: Bool)
+      pure $ [| r |]
+    evalByType "Char" s = do
+      r <- interpret s (as :: Char)
+      pure $ [| r |]
+    evalByType "String" s = do
+      r <- interpret s (as :: String)
+      pure $ [| r |]
+    evalByType "[Char]" s = do
+      r <- interpret s (as :: String)
+      pure $ [| r |]
+    evalByType t s = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\"" 
+
 
     moduleList :: [ModuleName]
     moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum"]
