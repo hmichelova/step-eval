@@ -228,7 +228,12 @@ step (CondE b t f) = do
   case b' of
     Exception e -> pure $ Exception e
     None -> case b of
-      ConE (Name (OccName n) _) -> pure $ if n == "True" then Value $ t else Value $ f
+      ConE (Name (OccName n) _) -> pure $ Value $ if n == "True" then t else f
+      VarE x -> do
+        env <- S.get
+        case getVar x env of
+          Just (ConE (Name (OccName n) _)) -> pure $ Value $ if n == "True" then t else f
+          otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
       otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
     Value v -> pure $ Value $ CondE v t f
 
