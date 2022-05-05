@@ -245,7 +245,7 @@ step (CondE b t f) = do
 
 step (LetE decs exp) = do
   env <- S.get
-  S.put $ setDec decs env
+  S.put $ insertDec decs env
   pure $ Value exp
 
 step (ListE []) = pure None
@@ -487,7 +487,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
 
 processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ = pure $ Exception "Guards are not supported"
 
-processDecs hexp [] (ValD pat (NormalB e) whereDec : decs) b = do
+processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b = do
   m <- patMatch pat e
   changeOrContinue m
   where
@@ -496,14 +496,21 @@ processDecs hexp [] (ValD pat (NormalB e) whereDec : decs) b = do
     changeOrContinue (PMatch rename) = do
       env <- S.get
       S.put $ insertDec (replaceDecs whereDec rename) env
-      pure $ Value $ replaceVars e rename VarE
-    changeOrContinue (PStep v) = pure $ Value v
+      env' <- S.get
+      case lookup x rename of
+        Just x' -> do
+          case getVar x' env' of
+            Just v -> pure $ Value $ replaceVars v rename VarE
+            Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
+        Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
+    changeOrContinue (PStep v) = do
+      m <- patMatch pat e
+      changeOrContinue m
     changeOrContinue (PException e) = pure $ Exception e
 
 processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Exception "Guards are not supported"
 
 toWHNF :: Exp -> StateExp
-toWHNF (CompE stmts) = undefined -- TODO fix
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
 toWHNF e@(VarE x) = do
   env <- S.get
