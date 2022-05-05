@@ -9,11 +9,12 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Data.List hiding ( length, take )
+import Data.List hiding ( length, take, map )
 import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Control.Monad.Trans.State as S
+import qualified Data.Map as M
 
 $funcs
 
@@ -282,13 +283,13 @@ patsMatch hexp (e : exps) (p : pats) = do
     PMatch rename -> do
       rv1 <- patsMatch (AppE hexp e) exps pats
       case rv1 of
-        PMatch rename1 -> pure $ PMatch $ rename ++ rename1
+        PMatch rename1 -> pure $ PMatch $ M.union rename rename1
         x -> pure x
     PStep v -> pure $ matched $ makeAppE (hexp : v : exps)
     x -> do
       S.put originEnv
       pure x
-patsMatch _ [] [] = pure $ PMatch []
+patsMatch _ [] [] = pure $ PMatch M.empty
 patsMatch _ [] p = pure $ PException $
   "Number of arguments (0) and " ++
   "number of paterns (" ++ show (length p) ++ ") are not the same"
@@ -297,33 +298,33 @@ patsMatch _ e p = pure $ PException $
   "number of paterns (" ++ show (length p) ++ ") are not the same" -- TODO fix etared
 
 patMatch :: Pat -> Exp -> S.StateT Env IO PatternMatch
-patMatch (LitP lp) (LitE le) = pure $ if lp == le then PMatch [] else PNomatch
+patMatch (LitP lp) (LitE le) = pure $ if lp == le then PMatch M.empty else PNomatch
 patMatch p@(LitP _) exp = patMatch' p exp
 
-patMatch (VarP np) e@(VarE ne) = if np == ne then pure (PMatch []) else do
+patMatch (VarP np) e@(VarE ne) = if np == ne then pure (PMatch M.empty) else do
   env <- S.get
   name <- liftIO $ newName $ getName np
   S.put $ insertVar name e env
-  pure $ PMatch $ [(np, name)]
+  pure $ PMatch $ M.fromList [(np, name)]
 patMatch (VarP n) exp = do
   env <- S.get
   name <- liftIO $ newName $ getName n
   S.put $ insertVar name exp env
-  pure $ PMatch $ [(n, name)]
+  pure $ PMatch $ M.fromList [(n, name)]
 
 patMatch (TupP ps) (TupE es) = if length ps /= length es
   then pure PNomatch
   else patMatchTup ps es
   where
     patMatchTup :: [Pat] -> [Maybe Exp] -> S.StateT Env IO PatternMatch
-    patMatchTup [] [] = pure $ PMatch []
+    patMatchTup [] [] = pure $ PMatch M.empty
     patMatchTup (p : pats) (Just e : exps) = do
       rv <- patMatch p e
       case rv of
         PMatch rename -> do
           rv1 <- patMatchTup pats exps
           case rv1 of
-            PMatch rename1 -> pure $ PMatch $ rename ++ rename1
+            PMatch rename1 -> pure $ PMatch $ M.union rename rename1
             PStep (TupE exps') -> pure $ PStep $ TupE $ Just e : exps'
             x -> pure x
         PStep v -> pure $ PStep $ TupE $ Just v : exps
@@ -340,9 +341,9 @@ patMatch pat@(UnboxedSumP _ _ _) _ =
   pure $ PException $ "Unboxed sum pattern " ++ pprint pat ++ " is not supported"
 
 -- TODO add (ConP np _ (x : xs)) - for user defined data types
-patMatch (ConP np _ []) (ConE ne) = pure $ if np == ne then PMatch [] else PNomatch
-patMatch (ConP np _ []) (ListE []) = pure $ if np == '[] then PMatch [] else PNomatch
-patMatch (ConP np _ []) (LitE (StringL "")) = pure $ if np == '[] then PMatch [] else PNomatch
+patMatch (ConP np _ []) (ConE ne) = pure $ if np == ne then PMatch M.empty else PNomatch
+patMatch (ConP np _ []) (ListE []) = pure $ if np == '[] then PMatch M.empty else PNomatch
+patMatch (ConP np _ []) (LitE (StringL "")) = pure $ if np == '[] then PMatch M.empty else PNomatch
 patMatch (ConP np _ []) (ListE (_ : _)) = pure PNomatch
 patMatch (ConP np _ []) (LitE (StringL (_ : _))) = pure PNomatch
 patMatch p@(ConP np _ []) exp@(InfixE me1 (ConE n) me2) = if n == '(:) && np == '[]
@@ -359,7 +360,7 @@ patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
         PMatch rename1 -> do
           rv2 <- patMatch p2 e2
           case rv2 of
-            PMatch rename2 -> pure $ PMatch $ rename ++ rename1 ++ rename2
+            PMatch rename2 -> pure $ PMatch $ M.union rename $ M.union rename1 rename2
             PStep v -> pure $ PStep $ InfixE (Just e1) exp (Just v)
             x -> pure x
         PStep v -> pure $ PStep $ InfixE (Just v) exp (Just e2)
@@ -374,7 +375,7 @@ patMatch (InfixP p1 np p2) (LitE (StringL (s : sx))) = if np /= '(:)
       PMatch rename1 -> do
         rv2 <- patMatch p2 (LitE (StringL sx))
         case rv2 of
-          PMatch rename2 -> pure $ PMatch $ rename1 ++ rename2
+          PMatch rename2 -> pure $ PMatch $ M.union rename1 rename2
           PStep (LitE (StringL v)) -> pure $ PStep $ LitE $ StringL $ s : v
           x -> pure x
       PStep (LitE (CharL v)) -> pure $ PStep $ LitE $ StringL $ v : sx
@@ -409,10 +410,10 @@ patMatch (AsP n p) exp = do
       env <- S.get
       name <- liftIO $ newName $ getName n
       S.put $ insertVar name (replaceVars exp (getVars env) id) env -- TODO rewrite
-      pure $ PMatch $ rename ++ [(n, name)]
+      pure $ PMatch $ M.union rename $ M.fromList [(n, name)]
     x -> pure x
 
-patMatch WildP _ = pure $ PMatch []
+patMatch WildP _ = pure $ PMatch M.empty
   
 patMatch pat@(RecP _ _) _ =
   pure $ PException $ "Record pattern " ++ pprint pat ++ " is not supported"
@@ -422,14 +423,14 @@ patMatch (ListP ps) (ListE es) = if length ps /= length es
   else checkLists ps es
   where
     checkLists :: [Pat] -> [Exp] -> S.StateT Env IO PatternMatch
-    checkLists [] [] = pure $ PMatch []
+    checkLists [] [] = pure $ PMatch M.empty
     checkLists (p : pats) (e : exps) = do
       rv <- patMatch p e
       case rv of
         PMatch rename -> do
           rv1 <- checkLists pats exps
           case rv1 of
-            PMatch rename1 -> pure $ PMatch $ rename ++ rename1
+            PMatch rename1 -> pure $ PMatch $ M.union rename rename1
             PStep (ListE exps') -> pure $ PStep $ ListE $ e : exps'
             x -> pure x
         PStep v -> pure $ PStep $ ListE $ v : exps
@@ -480,7 +481,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
     changeOrContinue (PMatch rename) = do
       env <- S.get
-      S.put $ insertDec (replaceDecs whereDec rename) env
+      S.put $ insertDec (replaceDecs whereDec rename []) env
       pure $ Value $ replaceVars e rename VarE
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
@@ -495,9 +496,9 @@ processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b = do
     changeOrContinue PNomatch = processDecs hexp [] decs b
     changeOrContinue (PMatch rename) = do
       env <- S.get
-      S.put $ insertDec (replaceDecs whereDec rename) env
+      S.put $ insertDec (replaceDecs whereDec rename []) env
       env' <- S.get
-      case lookup x rename of
+      case M.lookup x rename of
         Just x' -> do
           case getVar x' env' of
             Just v -> pure $ Value $ replaceVars v rename VarE

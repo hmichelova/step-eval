@@ -2,6 +2,7 @@ module PatExpFuns where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
+import qualified Data.Map as M
 
 import DataTypes
 
@@ -32,25 +33,25 @@ matched None = PNomatch
 matched (Value v) = PStep v
 matched (Exception e) = PException e
 
-replaceDecs :: [Dec] -> Dictionary Name -> [Dec]
-replaceDecs decs rename = map replaceDec decs
+replaceDecs :: [Dec] -> Dictionary Name -> [Name] -> [Dec]
+replaceDecs decs rename notR = map (flip replaceDec notR) decs
   where
-    replaceDec :: Dec -> Dec
-    replaceDec (FunD name clauses) = FunD name $ map replaceClauses clauses
-    replaceDec (ValD pat body whereDec) = 
-      let rename' = filter (\(_, n) -> notInPats n pat) rename in
-        ValD pat (replaceBody body rename') (replaceDecs whereDec rename')
-    replaceDec dec = dec
+    replaceDec :: Dec -> [Name] -> Dec
+    replaceDec (FunD name clauses) notR = FunD name $ map (flip replaceClauses notR) clauses
+    replaceDec (ValD pat body whereDec) notR =
+      ValD pat (replaceBody body rename (getNamesFromPats [pat] ++ notR))
+               (replaceDecs whereDec rename (getNamesFromPats [pat] ++ notR))
+    replaceDec dec _ = dec
 
-    replaceClauses :: Clause -> Clause
-    replaceClauses (Clause pats body decs) =
-      let rename' = filter (\(_, n) -> all (notInPats n) pats) rename in
-        Clause pats (replaceBody body rename') (replaceDecs decs rename')
+    replaceClauses :: Clause -> [Name] -> Clause
+    replaceClauses (Clause pats body decs) notR =
+      Clause pats (replaceBody body rename (getNamesFromPats pats ++ notR))
+                  (replaceDecs decs rename (getNamesFromPats pats ++ notR))
       where
 
-    replaceBody :: Body -> Dictionary Name -> Body
-    replaceBody (NormalB exp) rename = NormalB $ replaceVars exp rename VarE
-    replaceBody b _ = b -- TODO guards
+    replaceBody :: Body -> Dictionary Name -> [Name] -> Body
+    replaceBody (NormalB exp) rename notR = NormalB $ replaceVar exp rename VarE notR
+    replaceBody b _ _ = b -- TODO guards
 
     notInPats :: Name -> Pat -> Bool
     notInPats name (VarP n) = n /= name
@@ -71,36 +72,38 @@ replaceDecs decs rename = map replaceDec decs
     notInPats _ _ = True
 
 replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
-replaceVars exp rename f = foldl (\exp (n, e) -> replaceVar exp n e f) exp rename
+replaceVars exp rename f = replaceVar exp rename f []
 
-replaceVar :: Exp -> Name -> a -> (a -> Exp) -> Exp
-replaceVar exp@(VarE name) n e f = if name == n then f e else exp
+replaceVar :: Exp -> Dictionary a -> (a -> Exp) -> [Name] -> Exp
+replaceVar exp@(VarE name) d f notR = if elem name notR then exp
+  else case M.lookup name d of
+    Nothing -> exp
+    Just a -> replaceVar (f a) d f notR
 replaceVar exp@(ConE _) _ _ _ = exp
 replaceVar exp@(LitE _) _ _ _ = exp
-replaceVar (AppE e1 e2) n e f = AppE (replaceVar e1 n e f) (replaceVar e2 n e f)
-replaceVar (InfixE me1 exp me2) n e f =
-  InfixE (maybe Nothing (\e1 -> Just (replaceVar e1 n e f)) me1)
-         (replaceVar exp n e f)
-         (maybe Nothing (\e2 -> Just (replaceVar e2 n e f)) me2)
-replaceVar (ParensE exp) n e f = ParensE (replaceVar exp n e f)
-replaceVar le@(LamE pats exp) n e f = if elem n (getNamesFromPats pats)
-  then le
-  else LamE pats $ replaceVar exp n e f
-replaceVar (TupE mexps) n e f =
-  TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' n e f))) mexps
-replaceVar (CondE b t f) n e fun =
-  CondE (replaceVar b n e fun) (replaceVar t n e fun) (replaceVar f n e fun)
+replaceVar (AppE e1 e2) d f notR = AppE (replaceVar e1 d f notR) (replaceVar e2 d f notR)
+replaceVar (InfixE me1 exp me2) d f notR =
+  InfixE (maybe Nothing (\e1 -> Just (replaceVar e1 d f notR)) me1)
+         (replaceVar exp d f notR)
+         (maybe Nothing (\e2 -> Just (replaceVar e2 d f notR)) me2)
+replaceVar (ParensE exp) d f notR = ParensE (replaceVar exp d f notR)
+replaceVar le@(LamE pats exp) d f notR =
+  LamE pats $ replaceVar exp d f (getNamesFromPats pats ++ notR)
+replaceVar (TupE mexps) d f notR =
+  TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' d f notR))) mexps
+replaceVar (CondE b t f) d fun notR =
+  CondE (replaceVar b d fun notR) (replaceVar t d fun notR) (replaceVar f d fun notR)
 -- TODO let
-replaceVar (ListE xs) n e f = ListE $ map (\exp -> replaceVar exp n e f) xs
-replaceVar (ArithSeqE range) n e f = ArithSeqE $ replaceVarRange range
+replaceVar (ListE xs) d f notR = ListE $ map (\exp -> replaceVar exp d f notR) xs
+replaceVar (ArithSeqE range) d f notR = ArithSeqE $ replaceVarRange range
   where
     replaceVarRange :: Range -> Range
-    replaceVarRange (FromR fr) = FromR $ replaceVar fr n e f
-    replaceVarRange (FromThenR fr th) = FromThenR (replaceVar fr n e f) $ replaceVar th n e f
-    replaceVarRange (FromToR fr to) = FromToR (replaceVar fr n e f) $ replaceVar to n e f
-    replaceVarRange (FromThenToR fr th to) = FromThenToR (replaceVar fr n e f)
-                                                         (replaceVar th n e f)
-                                                         (replaceVar to n e f)
+    replaceVarRange (FromR fr) = FromR $ replaceVar fr d f notR
+    replaceVarRange (FromThenR fr th) = FromThenR (replaceVar fr d f notR) $ replaceVar th d f notR
+    replaceVarRange (FromToR fr to) = FromToR (replaceVar fr d f notR) $ replaceVar to d f notR
+    replaceVarRange (FromThenToR fr th to) = FromThenToR (replaceVar fr d f notR)
+                                                         (replaceVar th d f notR)
+                                                         (replaceVar to d f notR)
     
 replaceVar exp _ _ _ = exp -- TODO
 
