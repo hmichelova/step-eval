@@ -143,7 +143,7 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
     applyExp le@(LamE (pat : pats) exp) (e : exps) = do
       pm <- patMatch pat e
       case pm of
-        PMatch rename -> let body = replaceVars exp rename VarE in
+        PMatch rename -> let body = renameVars exp rename in
           pure $ makeAppE ((if null pats then body else LamE pats body) : exps)
         PNomatch -> pure $ Exception $
           "No pattern match for pattern " ++ pprint pat ++
@@ -206,7 +206,7 @@ step ie@(InfixE me1 exp me2) = do
       processDecs exp [e1, e2] decs True
     evaluateInfixE ei = do
       env <- S.get
-      liftIO $ evalInterpreter $ replaceVars ie (getVars env) id
+      liftIO $ evalInterpreter $ replaceVars ie (getVars env)
 
 step (ParensE e) = do
   e' <- step e
@@ -248,7 +248,7 @@ step (LetE decs exp) = do
   env <- S.get
   (rename, decs') <- renameDecs decs
   S.put $ insertDec decs' env
-  pure $ Value $ replaceVars exp rename VarE
+  pure $ Value $ renameVars exp rename
 
 step (ListE []) = pure None
 step exp@(ListE (e : exps)) = do
@@ -420,7 +420,7 @@ patMatch (AsP n p) exp = do
     PMatch rename -> do
       env <- S.get
       name <- liftIO $ newName $ getName n
-      S.put $ insertVar name (replaceVars exp (getVars env) id) env -- TODO rewrite
+      S.put $ insertVar name (replaceVars exp (getVars env)) env -- TODO rewrite
       pure $ PMatch $ M.union rename $ M.fromList [(n, name)]
     x -> pure x
 
@@ -460,7 +460,7 @@ patMatch pat@(ViewP _ _) _ =
 patMatch' :: Pat -> Exp -> S.StateT Env IO PatternMatch
 patMatch' p exp = do
   env <- S.get
-  let expReplaced = replaceVars exp (getVars env) id
+  let expReplaced = replaceVars exp (getVars env)
   if expReplaced /= exp
     then patMatch p expReplaced
     else do
@@ -478,7 +478,7 @@ processDecs hexp exps [] _ = do
   let appE = makeAppE (hexp : exps)
   env <- S.get
   case appE of
-    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env) id
+    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
     x -> pure x
 processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
 processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
@@ -493,7 +493,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue (PMatch rename) = do
       env <- S.get
       S.put $ insertDec (replaceDecs whereDec rename []) env
-      pure $ Value $ replaceVars e rename VarE
+      pure $ Value $ renameVars e rename
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
 
@@ -515,7 +515,7 @@ processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
       case M.lookup x rename of
         Just x' -> do
           case getVar x' env' of
-            Just v -> pure $ Value $ replaceVars v rename VarE
+            Just v -> pure $ Value $ renameVars v rename
             Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
         Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
     changeOrContinue (PStep v) = do
@@ -612,7 +612,7 @@ evaluateExp' qexp qdec = do
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
-      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env) id
+      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
 
     nextStep :: EitherNone Exp -> StateExp
     nextStep ene@(Value e) = do

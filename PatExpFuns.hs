@@ -79,8 +79,8 @@ replacePat (ListP ps) d = ListP $ map (flip replacePat d) ps
 replacePat (SigP p t) d = SigP (replacePat p d) t
 replacePat (ViewP _ _) d = undefined
 
-replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
-replaceVars exp rename f = replaceVar exp rename f []
+replaceVars :: Exp -> Dictionary Exp -> Exp
+replaceVars exp rename = replaceVar exp rename id []
 
 replaceVar :: Exp -> Dictionary a -> (a -> Exp) -> [Name] -> Exp
 replaceVar exp@(VarE name) d f notR = if elem name notR then exp
@@ -101,7 +101,15 @@ replaceVar (TupE mexps) d f notR =
   TupE $ map (maybe Nothing (\e' -> Just (replaceVar e' d f notR))) mexps
 replaceVar (CondE b t f) d fun notR =
   CondE (replaceVar b d fun notR) (replaceVar t d fun notR) (replaceVar f d fun notR)
--- TODO let
+replaceVar (LetE decs exp) d fun notR =
+  LetE decs (replaceVar exp d fun (notR ++ getPats decs))
+  where
+    getPats :: [Dec] -> [Name]
+    getPats = concatMap getPats'
+
+    getPats' :: Dec -> [Name]
+    getPats' (FunD n _) = [n]
+    getPats' (ValD p _ _) = getNamesFromPat p
 replaceVar (ListE xs) d f notR = ListE $ map (\exp -> replaceVar exp d f notR) xs
 replaceVar (ArithSeqE range) d f notR = ArithSeqE $ replaceVarRange range
   where
@@ -113,7 +121,22 @@ replaceVar (ArithSeqE range) d f notR = ArithSeqE $ replaceVarRange range
                                                          (replaceVar th d f notR)
                                                          (replaceVar to d f notR)
     
-replaceVar exp _ _ _ = exp -- TODO
+replaceVar exp _ _ _ = exp
+
+renameVars :: Exp -> Dictionary Name -> Exp
+renameVars exp rename = renameVar exp rename []
+
+renameVar :: Exp -> Dictionary Name -> [Name] -> Exp
+renameVar (LetE decs exp) d notR =
+  LetE (replaceDecs decs d notR) (replaceVar exp d VarE (notR ++ getPats decs))
+  where
+    getPats :: [Dec] -> [Name]
+    getPats = concatMap getPats'
+
+    getPats' :: Dec -> [Name]
+    getPats' (FunD n _) = [n]
+    getPats' (ValD p _ _) = getNamesFromPat p
+renameVar exp d notR = replaceVar exp d VarE notR
 
 getName :: Name -> String
 getName (Name (OccName n) _) = n
