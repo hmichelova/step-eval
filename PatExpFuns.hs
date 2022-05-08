@@ -7,13 +7,19 @@ import qualified Data.Map as M
 import DataTypes
 
 getDecs :: Name -> Bool -> Env -> [Dec]
-getDecs (Name (OccName n) _) sign (_, d) = filter theSameName d
+getDecs n@(Name (OccName on) _) sign (_, c, d) = filter sameName c ++ filter sameOccName d
   where
-    theSameName :: Dec -> Bool
-    theSameName (SigD (Name (OccName name) _) _) = sign && n == name
-    theSameName (FunD (Name (OccName name) _) _) = n == name
-    theSameName (ValD pat _ _) = any (\(Name (OccName name) _) -> n == name) $ getNamesFromPat pat
-    theSameName _             = False
+    sameName :: Dec -> Bool
+    sameName (SigD name _) = sign && n == name
+    sameName (FunD name _) = n == name
+    sameName (ValD pat _ _) = any (n ==) $ getNamesFromPat pat
+    sameName _             = False
+
+    sameOccName :: Dec -> Bool
+    sameOccName (SigD (Name (OccName name) _) _) = sign && on == name
+    sameOccName (FunD (Name (OccName name) _) _) = on == name
+    sameOccName (ValD pat _ _) = any (\(Name (OccName name) _) -> on == name) $ getNamesFromPat pat
+    sameOccName _             = False
 
 isNone :: EitherNone Exp -> Bool
 isNone None = True
@@ -34,42 +40,44 @@ matched (Value v) = PStep v
 matched (Exception e) = PException e
 
 replaceDecs :: [Dec] -> Dictionary Name -> [Name] -> [Dec]
-replaceDecs decs rename notR = map (flip replaceDec notR) decs
-  where
-    replaceDec :: Dec -> [Name] -> Dec
-    replaceDec (FunD name clauses) notR = FunD name $ map (flip replaceClauses notR) clauses
-    replaceDec (ValD pat body whereDec) notR =
-      ValD pat (replaceBody body rename (getNamesFromPats [pat] ++ notR))
-               (replaceDecs whereDec rename (getNamesFromPats [pat] ++ notR))
-    replaceDec dec _ = dec
+replaceDecs decs rename notR = map (\dec -> replaceDec dec rename notR) decs
 
-    replaceClauses :: Clause -> [Name] -> Clause
-    replaceClauses (Clause pats body decs) notR =
-      Clause pats (replaceBody body rename (getNamesFromPats pats ++ notR))
-                  (replaceDecs decs rename (getNamesFromPats pats ++ notR))
-      where
+replaceDec :: Dec -> Dictionary Name -> [Name] -> Dec
+replaceDec (FunD name clauses) rename notR =
+  FunD name $ replaceClauses clauses rename notR
+replaceDec (ValD pat body whereDec) rename notR =
+  ValD pat (replaceBody body rename (getNamesFromPats [pat] ++ notR))
+           (replaceDecs whereDec rename (getNamesFromPats [pat] ++ notR))
+replaceDec dec _ _ = dec
 
-    replaceBody :: Body -> Dictionary Name -> [Name] -> Body
-    replaceBody (NormalB exp) rename notR = NormalB $ replaceVar exp rename VarE notR
-    replaceBody b _ _ = b -- TODO guards
+replaceClauses :: [Clause] -> Dictionary Name -> [Name] -> [Clause]
+replaceClauses clauses rename notR = map (\c -> replaceClause c rename notR) clauses
 
-    notInPats :: Name -> Pat -> Bool
-    notInPats name (VarP n) = n /= name
-    notInPats name (TupP ps) = all (notInPats name) ps
-    notInPats name (UnboxedTupP ps) = all (notInPats name) ps
-    notInPats name (UnboxedSumP p _ _) = notInPats name p
-    notInPats name (ConP n _ ps) = name /= n && all (notInPats name) ps
-    notInPats name (InfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
-    notInPats name (UInfixP p1 n p2) = name /= n && all (notInPats name) [p1, p2]
-    notInPats name (ParensP p) = notInPats name p
-    notInPats name (TildeP p) = notInPats name p
-    notInPats name (BangP p) = notInPats name p
-    notInPats name (AsP n p) = name /= n && notInPats name p
-    notInPats name (RecP n _) = name /= n
-    notInPats name (ListP ps) = all (notInPats name) ps
-    notInPats name (SigP p _) = notInPats name p
-    notInPats name (ViewP _ p) = notInPats name p
-    notInPats _ _ = True
+replaceClause :: Clause -> Dictionary Name -> [Name] -> Clause
+replaceClause (Clause pats body decs) rename notR =
+  Clause pats (replaceBody body rename (getNamesFromPats pats ++ notR))
+              (replaceDecs decs rename (getNamesFromPats pats ++ notR))
+
+replaceBody :: Body -> Dictionary Name -> [Name] -> Body
+replaceBody (NormalB exp) rename notR = NormalB $ replaceVar exp rename VarE notR
+replaceBody b _ _ = b -- TODO guards
+
+replacePat :: Pat -> Dictionary Name -> Pat
+replacePat (VarP n) d = VarP $ M.findWithDefault n n d
+replacePat (TupP ps) d = TupP $ map (flip replacePat d) ps
+replacePat (UnboxedTupP ps) d = UnboxedTupP $ map (flip replacePat d) ps
+replacePat (UnboxedSumP p _ _) d = undefined
+replacePat (ConP n t ps) d = ConP n t $ map (flip replacePat d) ps
+replacePat (InfixP p1 n p2) d = InfixP (replacePat p1 d) n $ replacePat p2 d
+replacePat (UInfixP p1 n p2) d = UInfixP (replacePat p1 d) n $ replacePat p2 d
+replacePat (ParensP p) d = ParensP $ replacePat p d
+replacePat (TildeP p) d = TildeP $ replacePat p d
+replacePat (BangP p) d = BangP $ replacePat p d
+replacePat (AsP n p) d = AsP (M.findWithDefault n n d) $ replacePat p d
+replacePat (RecP _ _) d = undefined
+replacePat (ListP ps) d = ListP $ map (flip replacePat d) ps
+replacePat (SigP p t) d = SigP (replacePat p d) t
+replacePat (ViewP _ _) d = undefined
 
 replaceVars :: Exp -> Dictionary a -> (a -> Exp) -> Exp
 replaceVars exp rename f = replaceVar exp rename f []

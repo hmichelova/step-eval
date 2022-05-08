@@ -9,7 +9,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing, fromJust )
-import Data.List hiding ( length, take, map )
+import Data.List ( isSubsequenceOf )
 import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
@@ -246,8 +246,9 @@ step (CondE b t f) = do
 
 step (LetE decs exp) = do
   env <- S.get
-  S.put $ insertDec decs env
-  pure $ Value exp
+  (rename, decs') <- renameDecs decs
+  S.put $ insertDec decs' env
+  pure $ Value $ replaceVars exp rename VarE
 
 step (ListE []) = pure None
 step exp@(ListE (e : exps)) = do
@@ -498,9 +499,12 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
 
 processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ = pure $ Exception "Guards are not supported"
 
-processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b = do
-  m <- patMatch pat e
-  changeOrContinue m
+processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
+  if notElem x (getNamesFromPats [pat])
+    then processDecs hexp [] decs b
+    else do
+      m <- patMatch pat e
+      changeOrContinue m
   where
     changeOrContinue :: PatternMatch -> StateExp
     changeOrContinue PNomatch = processDecs hexp [] decs b
@@ -520,6 +524,58 @@ processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b = do
     changeOrContinue (PException e) = pure $ Exception e
 
 processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Exception "Guards are not supported"
+
+processDecs hexp exps (ValD _ _ _ : decs) b = processDecs hexp exps decs b
+
+renameDecs :: [Dec] -> S.StateT Env IO (Dictionary Name, [Dec])
+renameDecs [] = pure (M.empty, [])
+renameDecs (dec : decs) = do
+  (rename, dec') <- renameDec dec
+  (rename', decs') <- renameDecs decs
+  pure (M.union rename rename', replaceDec dec' rename' [] : replaceDecs decs' rename [])
+
+  where
+    renameDec :: Dec -> S.StateT Env IO (Dictionary Name, Dec)
+    renameDec (FunD name clauses) = do
+      n <- liftIO $ newName $ getName name
+      let rename = M.singleton name n
+      pure (rename, FunD n (replaceClauses clauses rename []))
+    renameDec (ValD pat body whereDec) = do
+      rename <- renamePat pat
+      let whereDec' = replaceDecs whereDec rename []
+      (rename', whereDec'') <- renameDecs whereDec'
+      pure (rename, ValD (replacePat pat rename)
+                         (replaceBody body (M.union rename' rename) [])
+                         whereDec''
+           )
+    renameDec dec = pure (M.empty, dec)
+
+    renamePat :: Pat -> S.StateT Env IO (Dictionary Name)
+    renamePat (LitP _) = pure M.empty
+    renamePat (VarP n) = do
+      n' <- liftIO $ newName $ getName n
+      pure $ M.singleton n n'
+    renamePat (TupP []) = pure M.empty
+    renamePat (TupP (x : xs)) = do
+      rename' <- renamePat x
+      rename'' <- renamePat $ TupP xs
+      pure $ M.union rename' rename''
+    renamePat (InfixP p1 _ p2) = do
+      rename' <- renamePat p1
+      rename'' <- renamePat p2
+      pure $ M.union rename' rename''
+    renamePat (ParensP p) = renamePat p
+    renamePat (AsP n p2) = do
+      n' <- liftIO $ newName $ getName n
+      rename' <- renamePat p2
+      pure $ M.union (M.singleton n n') rename'
+    renamePat (ListP []) = pure M.empty
+    renamePat (ListP (x : xs)) = do
+      rename' <- renamePat x
+      rename'' <- renamePat $ ListP xs
+      pure $ M.union rename' rename''
+    renamePat _ = pure M.empty
+
 
 toWHNF :: Exp -> StateExp
 toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
@@ -548,7 +604,7 @@ evaluateExp' qexp qdec = do
   where
     process :: Exp -> [Dec] -> IO ()
     process e d = do
-      S.runStateT (nextStep (Value e)) $ setDec d emptyEnv
+      S.runStateT (nextStep (Value e)) $ setDefaultDec d emptyEnv
       return ()
 
     niceOutputPrint :: EitherNone Exp -> S.StateT Env IO ()

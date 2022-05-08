@@ -29,7 +29,7 @@ instance Monad EitherNone where
 
 type IOEitherNone a = IO (EitherNone a)
 
-type Env = (Dictionary Exp, [Dec])
+type Env = (Dictionary Exp, [Dec], [Dec])
 
 type StateExp = S.StateT Env IO (EitherNone Exp)
 
@@ -42,25 +42,25 @@ data PatternMatch = PMatch (Dictionary Name)
                     deriving (Eq, Show)
 
 emptyEnv :: Env
-emptyEnv = (M.empty, [])
+emptyEnv = (M.empty, [], [])
 
-setDec :: [Dec] -> Env -> Env
-setDec d (m, _) = (m, d)
+setDefaultDec :: [Dec] -> Env -> Env
+setDefaultDec d (m, c, _) = (m, c, d)
 
 insertVar :: Name -> Exp -> Env -> Env
-insertVar n exp (m, d) = (M.insert n exp m, d)
+insertVar n exp (m, c, d) = (M.insert n exp m, c, d)
 
 updateOrInsertVar :: Name -> Exp -> Env -> Env
-updateOrInsertVar n exp (m, d) = (M.insertWith const n exp m, d)
+updateOrInsertVar n exp (m, c, d) = (M.insertWith const n exp m, c, d)
 
 insertDec :: [Dec] -> Env -> Env
-insertDec decs (m, d) = (m, decs ++ d)
+insertDec decs (m, c, d) = (m, decs ++ c, d)
 
 getVar :: Name -> Env -> Maybe Exp
-getVar n (m, _) = M.lookup n m
+getVar n (m, _, _) = M.lookup n m
 
 getVars :: Env -> Dictionary Exp
-getVars = fst
+getVars (m, _, _) = m
 
 pprintDictionary :: Ppr a => Dictionary a -> String
 pprintDictionary [] = ""
