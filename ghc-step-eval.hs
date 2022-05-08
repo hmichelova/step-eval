@@ -299,6 +299,16 @@ patsMatch _ e p = pure $ PException $
 
 patMatch :: Pat -> Exp -> S.StateT Env IO PatternMatch
 patMatch (LitP lp) (LitE le) = pure $ if lp == le then PMatch M.empty else PNomatch
+patMatch (LitP (StringL [])) (ListE []) = pure $ PMatch M.empty
+patMatch (LitP (StringL [])) (ConE n) = pure $ if n == '[] then PMatch M.empty else PNomatch
+patMatch (LitP (StringL [])) (ListE _) = pure PNomatch
+patMatch (LitP (StringL [])) (InfixE _ _ _) = pure PNomatch
+patMatch (LitP (StringL (s : ss))) (InfixE (Just (LitE (CharL ce))) (ConE n) (Just sse)) =
+  if n /= '(:) || s /= ce
+    then pure $ PNomatch
+    else patMatch (LitP (StringL ss)) sse
+patMatch (LitP (StringL (_ : _))) (InfixE _ _ _) = pure PNomatch
+patMatch (LitP (StringL (_ : _))) (ConE _) = pure PNomatch
 patMatch p@(LitP _) exp = patMatch' p exp
 
 patMatch (VarP np) e@(VarE ne) = if np == ne then pure (PMatch M.empty) else do
