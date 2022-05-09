@@ -7,8 +7,12 @@ import qualified Data.Map as M
 import DataTypes
 
 getDecs :: Name -> Bool -> Env -> [Dec]
-getDecs n@(Name (OccName on) _) sign (_, c, d) = filter sameName c ++ filter sameOccName d
+getDecs n@(Name (OccName on) _) sign (Env _ c d) = if null custom
+  then filter sameOccName d
+  else custom
   where
+    custom = filter sameName c
+
     sameName :: Dec -> Bool
     sameName (SigD name _) = sign && n == name
     sameName (FunD name _) = n == name
