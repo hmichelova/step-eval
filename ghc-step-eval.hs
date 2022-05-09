@@ -625,18 +625,21 @@ evaluateExp' qexp qdec = do
       where
         askAndStep = do
           liftIO $ putStrLn $ ""
-          liftIO $ putStr $ "Next step [n\\a\\h]? "
+          liftIO $ putStr $ "Next step [N,a,q,h]? "
           s <- liftIO getLine
-          case head s of
+          let s' = if null s then "n" else s
+          case head s' of
             'h' -> do
               liftIO $ putStrLn "ghc-step-eval help: "
-              liftIO $ putStrLn "  h: print help"
               liftIO $ putStrLn "  n: print next step and ask again"
               liftIO $ putStrLn "  a: print all following steps"
+              liftIO $ putStrLn "  q: quit the evaluation"
+              liftIO $ putStrLn "  h: print help"
               askAndStep
-            'f' -> do
+            'a' -> do
               ene1 <- step e
               nextStep ene1 True
+            'q' -> pure None
             _   -> do
               ene1 <- step e
               nextStep ene1 False
