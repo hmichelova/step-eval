@@ -604,7 +604,7 @@ evaluateExp' qexp qdec = do
   where
     process :: Exp -> [Dec] -> IO ()
     process e d = do
-      S.runStateT (nextStep (Value e)) $ setDefaultDec d emptyEnv
+      S.runStateT (nextStep (Value e) False) $ setDefaultDec d emptyEnv
       return ()
 
     niceOutputPrint :: EitherNone Exp -> S.StateT Env IO ()
@@ -614,15 +614,36 @@ evaluateExp' qexp qdec = do
       env <- S.get
       liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
 
-    nextStep :: EitherNone Exp -> StateExp
-    nextStep ene@(Value e) = do
+    nextStep :: EitherNone Exp -> Bool -> StateExp
+    nextStep ene@(Value e) b = do
       niceOutputPrint ene
-      ene1 <- step e
-      nextStep ene1
-    nextStep None = do
+      if b
+        then do
+          ene1 <- step e
+          nextStep ene1 b
+        else askAndStep
+      where
+        askAndStep = do
+          liftIO $ putStrLn $ ""
+          liftIO $ putStr $ "Next step [n\\a\\h]? "
+          s <- liftIO getLine
+          case head s of
+            'h' -> do
+              liftIO $ putStrLn "ghc-step-eval help: "
+              liftIO $ putStrLn "  h: print help"
+              liftIO $ putStrLn "  n: print next step and ask again"
+              liftIO $ putStrLn "  a: print all following steps"
+              askAndStep
+            'f' -> do
+              ene1 <- step e
+              nextStep ene1 True
+            _   -> do
+              ene1 <- step e
+              nextStep ene1 False
+    nextStep None _ = do
       liftIO $ putStrLn "Done"
       pure None
-    nextStep (Exception e) = fail e
+    nextStep (Exception e) _ = fail e
 
 
     removeSpec :: String -> String
