@@ -25,20 +25,20 @@ getDecs n@(Name (OccName on) _) sign (Env _ c d) = if null custom
     sameOccName (ValD pat _ _) = any (\(Name (OccName name) _) -> on == name) $ getNamesFromPat pat
     sameOccName _             = False
 
-isNone :: EitherNone Exp -> Bool
+isNone :: StepExp Exp -> Bool
 isNone None = True
 isNone _    = False
 
-fromValue :: EitherNone Exp -> Exp
+fromValue :: StepExp Exp -> Exp
 fromValue (Value exp) = exp
 fromValue x           = error ("Function `fromValue` is used for: " ++ show x)
 
-makeAppE :: [Exp] -> EitherNone Exp
+makeAppE :: [Exp] -> StepExp Exp
 makeAppE []  = Exception "Something went terribly wrong"
 makeAppE [x] = Value x
 makeAppE (x : y : xs) = makeAppE (AppE x y : xs)
 
-matched :: EitherNone Exp -> PatternMatch
+matched :: StepExp Exp -> PatternMatch
 matched None = PNomatch
 matched (Value v) = PStep v
 matched (Exception e) = PException e

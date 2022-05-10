@@ -6,30 +6,30 @@ import Language.Haskell.TH.Syntax
 import qualified Control.Monad.Trans.State as S
 import qualified Data.Map as M
 
-data EitherNone a = Exception String
-                  | None
-                  | Value a
-                    deriving (Eq, Show)
+data StepExp a = Exception String
+               | None
+               | Value a
+                 deriving (Eq, Show)
 
-instance Functor EitherNone where
+instance Functor StepExp where
   fmap _ (Exception e) = Exception e
   fmap _ None          = None
   fmap f (Value a)     = Value $ f a
 
-instance Applicative EitherNone where
+instance Applicative StepExp where
   pure = Value
   Exception e <*> _ = Exception e
   None        <*> _ = None
   Value f     <*> r = fmap f r
 
-instance Monad EitherNone where
+instance Monad StepExp where
   Exception e >>= _ = Exception e
   None        >>= _ = None
   Value v     >>= f = f v
 
-type IOEitherNone a = IO (EitherNone a)
+type IOStepExp a = IO (StepExp a)
 
-type StateExp = S.StateT Env IO (EitherNone Exp)
+type StateExp = S.StateT Env IO (StepExp Exp)
 
 data Env = Env (Dictionary Exp) [Dec] [Dec]
 

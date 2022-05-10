@@ -18,7 +18,7 @@ import qualified Data.Map as M
 
 $funcs
 
-evalInterpreter :: Exp -> IOEitherNone Exp
+evalInterpreter :: Exp -> IOStepExp Exp
 evalInterpreter e = do
   r <- runInterpreter $ doInterpret $ replaces $ pprint e
   case r of
@@ -122,7 +122,7 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         None -> pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
         Value exp' -> pure $ makeAppE (exp' : makeListArgsInfixE me1 me2 e ++ exps)
       where
-        substituteNothingInInfixE :: Exp -> Exp -> EitherNone Exp
+        substituteNothingInInfixE :: Exp -> Exp -> StepExp Exp
         substituteNothingInInfixE ie@(InfixE me1 exp me2) e
           | isNothing me1 = Value $ InfixE (Just e) exp me2
           | isNothing me2 = Value $ InfixE me1 exp (Just e)
@@ -158,7 +158,7 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
         Value v -> pure $ makeAppE (v : exps)
         x -> pure x
 
-    replaceAtIndex :: Int -> EitherNone Exp -> [Exp] -> [Exp]
+    replaceAtIndex :: Int -> StepExp Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
 step ie@(InfixE me1 exp me2) = do
@@ -607,14 +607,14 @@ evaluateExp' qexp qdec = do
       S.runStateT (nextStep (Value e) False) $ setDefaultDec d emptyEnv
       return ()
 
-    niceOutputPrint :: EitherNone Exp -> S.StateT Env IO ()
+    niceOutputPrint :: StepExp Exp -> S.StateT Env IO ()
     niceOutputPrint (Exception e) = fail e
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
       liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
 
-    nextStep :: EitherNone Exp -> Bool -> StateExp
+    nextStep :: StepExp Exp -> Bool -> StateExp
     nextStep ene@(Value e) b = do
       niceOutputPrint ene
       if b
