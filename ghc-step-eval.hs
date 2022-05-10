@@ -617,6 +617,7 @@ evaluateExp' qexp qdec = do
     nextStep :: StepExp Exp -> Bool -> StateExp
     nextStep ene@(Value e) b = do
       niceOutputPrint ene
+      liftIO $ putStrLn $ ""
       if b
         then do
           ene1 <- step e
@@ -624,8 +625,7 @@ evaluateExp' qexp qdec = do
         else askAndStep
       where
         askAndStep = do
-          liftIO $ putStrLn $ ""
-          liftIO $ putStr $ "Next step [N,a,q,h]? "
+          liftIO $ putStr $ "Next action [N,a,q,h]? "
           s <- liftIO getLine
           let s' = if null s then "n" else s
           case head s' of
@@ -635,6 +635,7 @@ evaluateExp' qexp qdec = do
               liftIO $ putStrLn "  a: print all following steps"
               liftIO $ putStrLn "  q: quit the evaluation"
               liftIO $ putStrLn "  h: print help"
+              liftIO $ putStrLn $ ""
               askAndStep
             'a' -> do
               ene1 <- step e
@@ -644,7 +645,7 @@ evaluateExp' qexp qdec = do
               ene1 <- step e
               nextStep ene1 False
     nextStep None _ = do
-      liftIO $ putStrLn "Done"
+      liftIO $ putStrLn "Expression is fully evaluated."
       pure None
     nextStep (Exception e) _ = fail e
 
