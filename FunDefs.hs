@@ -64,13 +64,6 @@ funcs = [d|
   zip _ [] = []
   zip (x : xs) (y : ys) = (x, y) : zip xs ys
 
-  zipWith' :: (a -> b -> c) -> [a] -> [b] -> [c]
-  zipWith' f = go
-    where
-      go [] _ = []
-      go _ [] = []
-      go (x : xs) (y : ys) = f x y : go xs ys
-
   zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
   zipWith f (x : xs) (y : ys) = f x y : zipWith f xs ys
   zipWith _ _        _        = []
