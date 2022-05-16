@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
-module Ghc_step_eval where
+module Step_eval (evaluateExp) where
 
 import FunDefs
 import DataTypes
@@ -651,5 +651,5 @@ evaluateExp' tqexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Ghc_step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum."] . pack
 
