@@ -343,11 +343,29 @@ evalInterpreter e = do
 
 processDecs :: Exp -> [Exp] -> [Dec] -> StateExp
 processDecs hexp exps [] = do
-  let appE = makeAppE (hexp : exps)
-  env <- S.get
-  case appE of
-    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
-    x -> pure x
+  exps' <- stepExps exps
+  case exps' of
+    Exception e -> pure $ Exception e
+    Value (ListE xs) -> pure $ makeAppE (hexp : xs)
+    None -> do
+      let appE = makeAppE (hexp : exps)
+      env <- S.get
+      case appE of
+        Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
+        x -> pure x
+  where
+    stepExps :: [Exp] -> StateExp
+    stepExps [] = pure None
+    stepExps (exp : exps) = do
+      exp' <- step exp
+      case exp' of
+        Exception e -> pure $ Exception e
+        Value e -> pure $ Value $ ListE $ e : exps
+        None -> do
+          exps' <- stepExps exps
+          case exps' of
+            Value (ListE xs) -> pure $ Value $ ListE $ exp : xs
+            x -> pure x
 processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
 processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) = do
   if length exps /= length pats
