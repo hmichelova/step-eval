@@ -17,7 +17,7 @@ Load the project to `GHCi` and set `TemplateHaskell` extension.
 For evaluation of expression use function `evaluateExp` and the only argument is typed quoted expression. For instance `evaluateExp [|| map id [1, 2] ||]`
 
 ```haskell
-ghci> evaluateExp [|| map id [1,2] ||]
+ghci> evaluateExp [|| map id [1, 2] ||]
   map id [1, 2]
 
   Next action [N,a,q,h]? h
