@@ -78,7 +78,7 @@ evaluateExp' tqexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base.", "GHC.Float."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base.", "GHC.Float.", "GHC.Real."] . pack
 
 -- step function --
 
@@ -304,8 +304,11 @@ evalInterpreter e = do
     evalByType "Int" s = do
       r <- interpret s (as :: Int)
       pure $ [| r |]
-    evalByType "Num a => a" s = do
-      r <- interpret s (as :: Integer)
+    evalByType "Float" s = do
+      r <- interpret s (as :: Float)
+      pure $ [| r |]
+    evalByType "Double" s = do
+      r <- interpret s (as :: Double)
       pure $ [| r |]
     evalByType "Bool" s = do
       r <- interpret s (as :: Bool)
@@ -321,6 +324,18 @@ evalInterpreter e = do
       pure $ [| r |]
     evalByType t s
       | isSubsequenceOf "->" t = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\" -- interpreter cannot evaluate functions"
+      | isSubsequenceOf "Floating" t = do
+        r <- interpret s (as :: Float)
+        pure $ [| r |]
+      | isSubsequenceOf "Enum" t = do
+        r <- interpret s (as :: Integer)
+        pure $ [| r |]
+      | isSubsequenceOf "Integral" t = do
+        r <- interpret s (as :: Integer)
+        pure $ [| r |]
+      | isSubsequenceOf "Num" t = do
+        r <- interpret s (as :: Integer)
+        pure $ [| r |]
       | isSubsequenceOf "=>" t = do
         r <- interpret s (as :: Integer)
         pure $ [| r |]
@@ -328,7 +343,7 @@ evalInterpreter e = do
 
 
     moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum", "GHC.Float"]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum", "GHC.Float", "GHC.Real"]
 
     replaces :: String -> String
     replaces = unpack . replace "GHC.Types." "" . pack
