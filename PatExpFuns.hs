@@ -159,3 +159,19 @@ getNamesFromPat (ListP ps) = getNamesFromPats ps
 getNamesFromPat (SigP _ _) = []
 getNamesFromPat (ViewP _ _) = []
 
+toWHNFP :: Pat -> Pat
+toWHNFP (LitP (StringL "")) = ConP '[] [] []
+toWHNFP (LitP (StringL (x : xs))) =
+  InfixP (LitP (CharL x)) '(:) (LitP (StringL xs))
+toWHNFP (ListP []) = ConP '[] [] []
+toWHNFP (ListP (x : xs)) = InfixP x '(:) (ListP xs)
+toWHNFP pat = pat
+
+toWHNFE :: Exp -> Exp
+toWHNFE (LitE (StringL "")) = ConE '[]
+toWHNFE (LitE (StringL (x : xs))) =
+  InfixE (Just (LitE (CharL x))) (ConE '(:)) (Just (LitE (StringL xs)))
+toWHNFE (ListE []) = ConE '[]
+toWHNFE (ListE (x : xs)) = InfixE (Just x) (ConE '(:)) (Just (ListE xs))
+toWHNFE exp = exp
+

@@ -99,12 +99,16 @@ step (ConE _) = pure None
 
 step (LitE _) = pure None
 
-step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in
-  applyExp hexp exps
+step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
+  hexp' <- step hexp
+  case hexp' of
+    Exception e -> pure $ Exception e
+    None -> applyExp hexp exps
+    Value v -> pure $ makeAppE (v : exps)
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
-    getSubExp x                = [x] -- TODO check if correct
+    getSubExp x                = [x]
 
     applyExp :: Exp -> [Exp] -> StateExp
     applyExp hexp@(VarE x) exps = do
@@ -296,73 +300,61 @@ patsMatch _ [] p = pure $ PException $
   "number of paterns (" ++ show (length p) ++ ") are not the same"
 patsMatch _ e p = pure $ PException $
   "Number of arguments (" ++ show (length e) ++ ") and " ++
-  "number of paterns (" ++ show (length p) ++ ") are not the same" -- TODO fix etared
+  "number of paterns (" ++ show (length p) ++ ") are not the same"
 
 patMatch :: Pat -> Exp -> S.StateT Env IO PatternMatch
-patMatch (LitP lp) (LitE le) = pure $ if lp == le then PMatch M.empty else PNomatch
-patMatch (LitP (StringL [])) (ListE []) = pure $ PMatch M.empty
-patMatch (LitP (StringL [])) (ConE n) = pure $ if n == '[] then PMatch M.empty else PNomatch
-patMatch (LitP (StringL [])) (ListE _) = pure PNomatch
-patMatch (LitP (StringL [])) (InfixE _ _ _) = pure PNomatch
-patMatch (LitP (StringL (s : ss))) (InfixE (Just (LitE (CharL ce))) (ConE n) (Just sse)) =
-  if n /= '(:) || s /= ce
-    then pure $ PNomatch
-    else patMatch (LitP (StringL ss)) sse
-patMatch (LitP (StringL (_ : _))) (InfixE _ _ _) = pure PNomatch
-patMatch (LitP (StringL (_ : _))) (ConE _) = pure PNomatch
-patMatch p@(LitP _) exp = patMatch' p exp
+patMatch pat exp = patMatchWHNF (toWHNFP pat) (toWHNFE exp) exp
 
-patMatch (VarP np) e@(VarE ne) = if np == ne then pure (PMatch M.empty) else do
+patMatchWHNF :: Pat -> Exp -> Exp -> S.StateT Env IO PatternMatch
+patMatchWHNF (LitP lp) (LitE le) _ = pure $ if lp == le then PMatch M.empty else PNomatch
+patMatchWHNF p@(LitP _) exp orig = patMatch' p exp orig
+
+patMatchWHNF (VarP np) e@(VarE ne) _ = if np == ne then pure (PMatch M.empty) else do
   env <- S.get
   name <- liftIO $ newName $ getName np
   S.put $ insertVar name e env
   pure $ PMatch $ M.fromList [(np, name)]
-patMatch (VarP n) exp = do
+patMatchWHNF (VarP n) exp _ = do
   env <- S.get
   name <- liftIO $ newName $ getName n
   S.put $ insertVar name exp env
   pure $ PMatch $ M.fromList [(n, name)]
 
-patMatch (TupP ps) (TupE es) = if length ps /= length es
+patMatchWHNF (TupP ps) (TupE es) _ = if length ps /= length es
   then pure PNomatch
-  else patMatchTup ps es
+  else patMatchWHNFTup ps es
   where
-    patMatchTup :: [Pat] -> [Maybe Exp] -> S.StateT Env IO PatternMatch
-    patMatchTup [] [] = pure $ PMatch M.empty
-    patMatchTup (p : pats) (Just e : exps) = do
+    patMatchWHNFTup :: [Pat] -> [Maybe Exp] -> S.StateT Env IO PatternMatch
+    patMatchWHNFTup [] [] = pure $ PMatch M.empty
+    patMatchWHNFTup (p : pats) (Just e : exps) = do
       rv <- patMatch p e
       case rv of
         PMatch rename -> do
-          rv1 <- patMatchTup pats exps
+          rv1 <- patMatchWHNFTup pats exps
           case rv1 of
             PMatch rename1 -> pure $ PMatch $ M.union rename rename1
             PStep (TupE exps') -> pure $ PStep $ TupE $ Just e : exps'
             x -> pure x
         PStep v -> pure $ PStep $ TupE $ Just v : exps
         x -> pure x
-    patMatchTup (p : pats) (Nothing : exps) = pure $ PException "Missing argument in tuple"
-    patMatchTup _ _ = pure $ PException "Something went wrong in tuples check"
+    patMatchWHNFTup (p : pats) (Nothing : exps) = pure $ PException "Missing argument in tuple"
+    patMatchWHNFTup _ _ = pure $ PException "Something went wrong in tuples check"
 
-patMatch p@(TupP _) exp = patMatch' p exp
+patMatchWHNF p@(TupP _) exp orig = patMatch' p exp orig
 
-patMatch pat@(UnboxedTupP _) _ =
+patMatchWHNF pat@(UnboxedTupP _) _ _ =
   pure $ PException $ "Unboxed tupple pattern " ++ pprint pat ++ " is not supported"
 
-patMatch pat@(UnboxedSumP _ _ _) _ =
+patMatchWHNF pat@(UnboxedSumP _ _ _) _ _ =
   pure $ PException $ "Unboxed sum pattern " ++ pprint pat ++ " is not supported"
 
--- TODO add (ConP np _ (x : xs)) - for user defined data types
-patMatch (ConP np _ []) (ConE ne) = pure $ if np == ne then PMatch M.empty else PNomatch
-patMatch (ConP np _ []) (ListE []) = pure $ if np == '[] then PMatch M.empty else PNomatch
-patMatch (ConP np _ []) (LitE (StringL "")) = pure $ if np == '[] then PMatch M.empty else PNomatch
-patMatch (ConP np _ []) (ListE (_ : _)) = pure PNomatch
-patMatch (ConP np _ []) (LitE (StringL (_ : _))) = pure PNomatch
-patMatch p@(ConP np _ []) exp@(InfixE me1 (ConE n) me2) = if n == '(:) && np == '[]
+patMatchWHNF (ConP np _ []) (ConE ne) _ = pure $ if np == ne then PMatch M.empty else PNomatch
+patMatchWHNF p@(ConP np _ []) exp@(InfixE me1 (ConE n) me2) orig = if n == '(:) && np == '[]
   then pure PNomatch
-  else patMatch' p exp
-patMatch p@(ConP np _ _) exp = patMatch' p exp
+  else patMatch' p exp orig
+patMatchWHNF p@(ConP np _ _) exp orig = patMatch' p exp orig
 
-patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
+patMatchWHNF (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) _ = do
   rv <- patMatch (ConP np [] []) exp
   case rv of
     PMatch rename -> do
@@ -378,99 +370,52 @@ patMatch (InfixP p1 np p2) (InfixE (Just e1) exp (Just e2)) = do
         x -> pure x
     PStep v -> pure $ PStep $ InfixE (Just e1) v (Just e2)
     x -> pure x
-patMatch (InfixP p1 np p2) (LitE (StringL (s : sx))) = if np /= '(:)
+patMatchWHNF p@(InfixP _ np _) exp@(ConE ne) orig = if np == '(:) && ne == '[]
   then pure PNomatch
-  else do
-    rv1 <- patMatch p1 (LitE (CharL s))
-    case rv1 of
-      PMatch rename1 -> do
-        rv2 <- patMatch p2 (LitE (StringL sx))
-        case rv2 of
-          PMatch rename2 -> pure $ PMatch $ M.union rename1 rename2
-          PStep (LitE (StringL v)) -> pure $ PStep $ LitE $ StringL $ s : v
-          x -> pure x
-      PStep (LitE (CharL v)) -> pure $ PStep $ LitE $ StringL $ v : sx
-      PStep (LitE (StringL v)) -> pure $ PStep $ LitE $ StringL $ v ++ sx
-      x -> pure x
-patMatch p@(InfixP _ np _) exp@(ConE ne) = if np == '(:) && ne == '[]
-  then pure PNomatch
-  else patMatch' p exp
-patMatch p@(InfixP _ np _) exp@(LitE (StringL "")) = if np == '(:)
-  then pure PNomatch
-  else patMatch' p exp
-patMatch p@(InfixP _ np _) exp@(ListE []) = if np == '(:)
-  then pure PNomatch
-  else pure $ PException $ "Try to match value " ++ pprint exp ++ " to pattern " ++ pprint p
-patMatch p@(InfixP _ _ _) exp = patMatch' p exp
+  else patMatch' p exp orig
+patMatchWHNF p@(InfixP _ _ _) exp orig = patMatch' p exp orig
 
-patMatch pat@(UInfixP _ _ _) _ =
+patMatchWHNF pat@(UInfixP _ _ _) _ _ =
   pure $ PException $ "UInfix pattern " ++ pprint pat ++ " is not supported"
 
-patMatch (ParensP p) exp = patMatch p exp
+patMatchWHNF (ParensP p) exp _ = patMatch p exp
 
-patMatch pat@(TildeP _) _ =
+patMatchWHNF pat@(TildeP _) _ _ =
   pure $ PException $ "Tilde pattern " ++ pprint pat ++ " is not supported"
 
-patMatch pat@(BangP _) _ =
+patMatchWHNF pat@(BangP _) _ _ =
   pure $ PException $ "Bang pattern " ++ pprint pat ++ " is not supported"
 
-patMatch (AsP n p) exp = do
+patMatchWHNF (AsP n p) exp _ = do
   rv <- patMatch p exp
   case rv of
     PMatch rename -> do
       env <- S.get
       name <- liftIO $ newName $ getName n
-      S.put $ insertVar name (replaceVars exp (getVars env)) env -- TODO rewrite
+      S.put $ insertVar name (replaceVars exp (getVars env)) env
       pure $ PMatch $ M.union rename $ M.fromList [(n, name)]
     x -> pure x
 
-patMatch WildP _ = pure $ PMatch M.empty
+patMatchWHNF WildP _ _ = pure $ PMatch M.empty
   
-patMatch pat@(RecP _ _) _ =
+patMatchWHNF pat@(RecP _ _) _ _ =
   pure $ PException $ "Record pattern " ++ pprint pat ++ " is not supported"
-
-patMatch (ListP ps) (ListE es) = if length ps /= length es
-  then pure PNomatch
-  else checkLists ps es
-  where
-    checkLists :: [Pat] -> [Exp] -> S.StateT Env IO PatternMatch
-    checkLists [] [] = pure $ PMatch M.empty
-    checkLists (p : pats) (e : exps) = do
-      rv <- patMatch p e
-      case rv of
-        PMatch rename -> do
-          rv1 <- checkLists pats exps
-          case rv1 of
-            PMatch rename1 -> pure $ PMatch $ M.union rename rename1
-            PStep (ListE exps') -> pure $ PStep $ ListE $ e : exps'
-            x -> pure x
-        PStep v -> pure $ PStep $ ListE $ v : exps
-        x -> pure x
-    checkLists _ _ = pure $ PException "Something went wrong in lists check"
-patMatch (ListP []) exp = patMatch (ConP '[] [] []) exp
-patMatch (ListP (x : xs)) exp = patMatch (InfixP x '(:) (ListP xs)) exp
-
-patMatch pat@(SigP _ _) _ =
+patMatchWHNF pat@(SigP _ _) _ _ =
   pure $ PException $ "Sig pattern " ++ pprint pat ++ " is not supported"
 
-patMatch pat@(ViewP _ _) _ =
+patMatchWHNF pat@(ViewP _ _) _ _ =
   pure $ PException $ "View pattern " ++ pprint pat ++ " is not supported"
 
 
-patMatch' :: Pat -> Exp -> S.StateT Env IO PatternMatch
-patMatch' p exp = do
+patMatch' :: Pat -> Exp -> Exp -> S.StateT Env IO PatternMatch
+patMatch' p exp orig = do
   env <- S.get
   let expReplaced = replaceVars exp (getVars env)
   if expReplaced /= exp
-    then patMatch p expReplaced
+    then patMatch p $ toWHNFE expReplaced
     else do
-      expWHNF <- toWHNF exp
-      case expWHNF of
-        None -> do
-          exp' <- step exp
-          pure $ matched exp'
-        Value v -> patMatch p v
-        x -> pure $ matched x
+      orig' <- step orig
+      pure $ matched orig'
 
 processDecs :: Exp -> [Exp] -> [Dec] -> Bool -> StateExp
 processDecs hexp [exp1, exp2] [] False = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
@@ -576,23 +521,6 @@ renameDecs (dec : decs) = do
       pure $ M.union rename' rename''
     renamePat _ = pure M.empty
 
-
-toWHNF :: Exp -> StateExp
-toWHNF (ListE (x : xs)) = pure $ Value (InfixE (Just x) (ConE '(:)) (Just (ListE xs)))
-toWHNF e@(VarE x) = do
-  env <- S.get
-  case getVar x env of
-    Just v -> do
-      e' <- toWHNF v
-      case e' of
-        Value v -> do
-          env' <- S.get
-          S.put $ insertVar x v env'
-          pure $ e'
-        x' -> pure $ x'
-    Nothing -> pure None
-toWHNF exp = pure None
-
 evaluateExp :: Code Q a -> IO ()
 evaluateExp = flip evaluateExp' funcs . examineCode
 
@@ -651,5 +579,5 @@ evaluateExp' tqexp qdec = do
 
 
     removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum."] . pack
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base."] . pack
 
