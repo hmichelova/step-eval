@@ -175,45 +175,10 @@ step ie@(InfixE me1@(Just e1) exp me2@(Just e2)) = do
   case enexp' of
     Exception e -> pure $ Exception e
     None -> do
-      e1' <- step e1
-      case e1' of
-        Exception e -> pure $ Exception e
-        None -> do
-          e2' <- step e2
-          case e2' of
-            Exception e -> pure $ Exception e
-            None -> do
-              list <- joinList ie
-              case list of
-                None -> evaluateInfixE ie
-                x -> pure x
-            Value exp2' -> pure $ Value $ InfixE me1 exp (Just exp2')
-        Value exp1' -> pure $ Value $ InfixE (Just exp1') exp me2
-    Value exp' -> pure $ Value $ InfixE me1 exp' me2
-  where
-    joinList :: Exp -> StateExp
-    joinList (VarE x) = do
-      env <- S.get
-      case getVar x env of
-        Just e -> joinList e
-        Nothing -> pure None
-    joinList e@(ListE _) = pure $ Value e
-    joinList (ConE n) = pure $ if n == '[] then Value $ ListE [] else None
-    joinList (InfixE (Just e1) (ConE var) (Just e2)) = if var /= '(:) then pure None else do
-      e2' <- joinList e2
-      case e2' of
-        Value (ListE xs) -> pure $ Value $ ListE (e1 : xs)
+      case makeAppE [exp, e1, e2] of
+        Value expApp -> step expApp
         x -> pure x
-    joinList e = pure None
-
-    evaluateInfixE :: Exp -> StateExp
-    evaluateInfixE (InfixE (Just e1) (VarE x) (Just e2)) = do
-      env <- S.get
-      let decs = getDecs x False env
-      processDecs exp [e1, e2] decs
-    evaluateInfixE ei = do
-      env <- S.get
-      liftIO $ evalInterpreter $ replaceVars ie (getVars env)
+    Value exp' -> pure $ Value $ InfixE me1 exp' me2
 step ie@(InfixE _ _ _) = pure None
 
 step (ParensE e) = do
