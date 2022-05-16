@@ -9,7 +9,7 @@ import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing )
-import Data.List ( isSubsequenceOf )
+import Data.List ( isSubsequenceOf, elemIndex )
 import Prelude hiding ( id, const, take, drop, map, filter, head, tail, last, init, null, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, elem, notElem, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
@@ -39,7 +39,7 @@ evaluateExp' tqexp qdec = do
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
-      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
+      liftIO $ putStrLn $ removeUnderscore $ removeSpec $ pprint $ replaceVars e (getVars env)
 
     nextStep :: StepExp Exp -> Bool -> StateExp
     nextStep ene@(Value e) b = do
@@ -79,6 +79,13 @@ evaluateExp' tqexp qdec = do
 
     removeSpec :: String -> String
     removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base.", "GHC.Float.", "GHC.Real."] . pack
+
+    removeUnderscore :: String -> String
+    removeUnderscore = unwords . map remUnd . words
+      where
+        remUnd s = case elemIndex '_' s of
+          Nothing -> s
+          Just x -> take x s
 
 -- step function --
 
