@@ -170,15 +170,41 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
     replaceAtIndex :: Int -> StepExp Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
-step ie@(InfixE me1@(Just e1) exp me2@(Just e2)) = do
-  enexp' <- step exp
-  case enexp' of
-    Exception e -> pure $ Exception e
-    None -> do
-      case makeAppE [exp, e1, e2] of
-        Value expApp -> step expApp
+step ie@(InfixE me1@(Just e1) exp me2@(Just e2)) =
+  case exp of
+    ConE x -> if x == '(:) then asList else asAppE
+    otherwise -> asAppE
+  where
+    asList = do
+      e1' <- step e1
+      case e1' of
+        Exception e -> pure $ Exception e
+        None -> do
+          e2' <- step e2
+          case e2' of
+            Exception e -> pure $ Exception e
+            None -> liftIO $ joinList ie
+            Value exp2' -> pure $ Value $ InfixE me1 exp (Just exp2')
+        Value exp1' -> pure $ Value $ InfixE (Just exp1') exp me2
+
+    asAppE = do
+      enexp' <- step exp
+      case enexp' of
+        Exception e -> pure $ Exception e
+        None -> do
+          case makeAppE [exp, e1, e2] of
+            Value expApp -> step expApp
+            x -> pure x
+        Value exp' -> pure $ Value $ InfixE me1 exp' me2
+
+    joinList e@(ListE _) = pure $ Value e
+    joinList (ConE n) = pure $ if n == '[] then Value $ ListE [] else None
+    joinList (InfixE (Just e1) (ConE var) (Just e2)) = if var /= '(:) then pure None else do
+      e2' <- joinList e2
+      case e2' of
+        Value (ListE xs) -> pure $ Value $ ListE (e1 : xs)
         x -> pure x
-    Value exp' -> pure $ Value $ InfixE me1 exp' me2
+    joinList e = pure None
 step ie@(InfixE _ _ _) = pure None
 
 step (ParensE e) = do
