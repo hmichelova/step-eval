@@ -56,7 +56,7 @@ replaceClause (Clause pats body decs) rename notR =
 
 replaceBody :: Body -> Dictionary Name -> [Name] -> Body
 replaceBody (NormalB exp) rename notR = NormalB $ replaceVar exp rename VarE notR
-replaceBody b _ _ = b -- TODO guards
+replaceBody b _ _ = b
 
 replacePat :: Pat -> Dictionary Name -> Pat
 replacePat (VarP n) d = VarP $ M.findWithDefault n n d

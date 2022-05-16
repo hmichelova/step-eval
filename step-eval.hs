@@ -8,7 +8,7 @@ import PatExpFuns
 import Control.Monad
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
-import Data.Maybe ( isNothing, fromJust )
+import Data.Maybe ( isNothing )
 import Data.List ( isSubsequenceOf )
 import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
@@ -18,54 +18,69 @@ import qualified Data.Map as M
 
 $funcs
 
-evalInterpreter :: Exp -> IOStepExp Exp
-evalInterpreter e = do
-  r <- runInterpreter $ doInterpret $ replaces $ pprint e
-  case r of
-    Left err -> pure $ Exception $ show err
-    Right qe -> do
-      e' <- runQ qe
-      pure $ Value e'
+-- initialisation --
+
+evaluateExp :: Code Q a -> IO ()
+evaluateExp = flip evaluateExp' funcs . examineCode
+
+evaluateExp' :: Q (TExp a) -> Q [Dec] -> IO ()
+evaluateExp' tqexp qdec = do
+  te <- runQ tqexp
+  d <- runQ qdec
+  process (unType te) d
   where
-    doInterpret s = do
-      setImports moduleList
-      t <- typeOf s
-      evalByType t s
+    process :: Exp -> [Dec] -> IO ()
+    process e d = do
+      S.runStateT (nextStep (Value e) False) $ setDefaultDec d emptyEnv
+      return ()
 
-    evalByType "Integer" s = do
-      r <- interpret s (as :: Integer)
-      pure $ [| r |]
-    evalByType "Int" s = do
-      r <- interpret s (as :: Int)
-      pure $ [| r |]
-    evalByType "Num a => a" s = do
-      r <- interpret s (as :: Integer)
-      pure $ [| r |]
-    evalByType "Bool" s = do
-      r <- interpret s (as :: Bool)
-      pure $ [| r |]
-    evalByType "Char" s = do
-      r <- interpret s (as :: Char)
-      pure $ [| r |]
-    evalByType "String" s = do
-      r <- interpret s (as :: String)
-      pure $ [| r |]
-    evalByType "[Char]" s = do
-      r <- interpret s (as :: String)
-      pure $ [| r |]
-    evalByType t s
-      | isSubsequenceOf "->" t = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\" -- interpreter cannot evaluate functions"
-      | isSubsequenceOf "=>" t = do
-        r <- interpret s (as :: Integer)
-        pure $ [| r |]
-      | otherwise = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\""
+    niceOutputPrint :: StepExp Exp -> S.StateT Env IO ()
+    niceOutputPrint (Exception e) = fail e
+    niceOutputPrint None = liftIO $ putStrLn "Return value is none"
+    niceOutputPrint (Value e) = do
+      env <- S.get
+      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
+
+    nextStep :: StepExp Exp -> Bool -> StateExp
+    nextStep ene@(Value e) b = do
+      niceOutputPrint ene
+      liftIO $ putStrLn $ ""
+      if b
+        then do
+          ene1 <- step e
+          nextStep ene1 b
+        else askAndStep
+      where
+        askAndStep = do
+          liftIO $ putStr $ "Next action [N,a,q,h]? "
+          s <- liftIO getLine
+          let s' = if null s then "n" else s
+          case head s' of
+            'h' -> do
+              liftIO $ putStrLn "ghc-step-eval help: "
+              liftIO $ putStrLn "  n: print next step and ask again"
+              liftIO $ putStrLn "  a: print all following steps"
+              liftIO $ putStrLn "  q: quit the evaluation"
+              liftIO $ putStrLn "  h: print help"
+              liftIO $ putStrLn $ ""
+              askAndStep
+            'a' -> do
+              ene1 <- step e
+              nextStep ene1 True
+            'q' -> pure None
+            _   -> do
+              ene1 <- step e
+              nextStep ene1 False
+    nextStep None _ = do
+      liftIO $ putStrLn "Expression is fully evaluated."
+      pure None
+    nextStep (Exception e) _ = fail e
 
 
-    moduleList :: [ModuleName]
-    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum"]
+    removeSpec :: String -> String
+    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base.", "GHC.Float."] . pack
 
-    replaces :: String -> String
-    replaces = unpack . replace "GHC.Types." "" . pack
+-- step function --
 
 step :: Exp -> StateExp
 step (VarE x) = do
@@ -222,6 +237,10 @@ step exp@(TupE (me : exps)) = do
         x -> pure x
     Value v -> pure $ Value $ TupE $ (Just v) : exps
     x -> pure x
+  where
+    stepMaybe :: Maybe Exp -> StateExp
+    stepMaybe Nothing = pure $ None
+    stepMaybe (Just e) = step e
 
 step (CondE b t f) = do
   b' <- step b
@@ -265,9 +284,114 @@ step exp@(ArithSeqE (FromThenToR fr th to)) =  pure $ Value $
        to
 step exp = pure $ Exception $ "Unsupported format of expression: " ++ pprint exp
 
-stepMaybe :: Maybe Exp -> StateExp
-stepMaybe Nothing = pure $ None
-stepMaybe (Just e) = step e
+evalInterpreter :: Exp -> IOStepExp Exp
+evalInterpreter e = do
+  r <- runInterpreter $ doInterpret $ replaces $ pprint e
+  case r of
+    Left err -> pure $ Exception $ show err
+    Right qe -> do
+      e' <- runQ qe
+      pure $ Value e'
+  where
+    doInterpret s = do
+      setImports moduleList
+      t <- typeOf s
+      evalByType t s
+
+    evalByType "Integer" s = do
+      r <- interpret s (as :: Integer)
+      pure $ [| r |]
+    evalByType "Int" s = do
+      r <- interpret s (as :: Int)
+      pure $ [| r |]
+    evalByType "Num a => a" s = do
+      r <- interpret s (as :: Integer)
+      pure $ [| r |]
+    evalByType "Bool" s = do
+      r <- interpret s (as :: Bool)
+      pure $ [| r |]
+    evalByType "Char" s = do
+      r <- interpret s (as :: Char)
+      pure $ [| r |]
+    evalByType "String" s = do
+      r <- interpret s (as :: String)
+      pure $ [| r |]
+    evalByType "[Char]" s = do
+      r <- interpret s (as :: String)
+      pure $ [| r |]
+    evalByType t s
+      | isSubsequenceOf "->" t = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\" -- interpreter cannot evaluate functions"
+      | isSubsequenceOf "=>" t = do
+        r <- interpret s (as :: Integer)
+        pure $ [| r |]
+      | otherwise = error $ "Unexpected type \"" ++ t ++ "\" of expression \"" ++ s ++ "\""
+
+
+    moduleList :: [ModuleName]
+    moduleList = ["Prelude", "GHC.Num", "GHC.Base", "GHC.Types", "GHC.Classes", "GHC.List", "GHC.Err", "GHC.Enum", "GHC.Float"]
+
+    replaces :: String -> String
+    replaces = unpack . replace "GHC.Types." "" . pack
+
+-- pattern matching --
+
+processDecs :: Exp -> [Exp] -> [Dec] -> Bool -> StateExp
+processDecs hexp [exp1, exp2] [] False =
+  pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
+processDecs hexp exps [] _ = do
+  let appE = makeAppE (hexp : exps)
+  env <- S.get
+  case appE of
+    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
+    x -> pure x
+processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
+processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
+  if length exps /= length pats
+    then pure $ Exception $ "Wrong number of arguments in function " ++ pprint hexp
+    else do
+      exp' <- patsMatch hexp exps pats
+      changeOrContinue exp'
+  where
+    changeOrContinue :: PatternMatch -> StateExp
+    changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
+    changeOrContinue (PMatch rename) = do
+      env <- S.get
+      S.put $ insertDec (replaceDecs whereDec rename []) env
+      pure $ Value $ renameVars e rename
+    changeOrContinue (PStep v) = pure $ Value v
+    changeOrContinue (PException e) = pure $ Exception e
+
+processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ =
+  pure $ Exception "Guards are not supported"
+
+processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
+  if notElem x (getNamesFromPats [pat])
+    then processDecs hexp [] decs b
+    else do
+      m <- patMatch pat e
+      changeOrContinue m
+  where
+    changeOrContinue :: PatternMatch -> StateExp
+    changeOrContinue PNomatch = processDecs hexp [] decs b
+    changeOrContinue (PMatch rename) = do
+      env <- S.get
+      S.put $ insertDec (replaceDecs whereDec rename []) env
+      env' <- S.get
+      case M.lookup x rename of
+        Just x' -> do
+          case getVar x' env' of
+            Just v -> pure $ Value $ renameVars v rename
+            Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
+        Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
+    changeOrContinue (PStep v) = do
+      m <- patMatch pat e
+      changeOrContinue m
+    changeOrContinue (PException e) = pure $ Exception e
+
+processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ =
+  pure $ Exception "Guards are not supported"
+
+processDecs hexp exps (ValD _ _ _ : decs) b = processDecs hexp exps decs b
 
 patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO PatternMatch
 patsMatch hexp (e : exps) (p : pats) = do
@@ -395,7 +519,6 @@ patMatchWHNF pat@(SigP _ _) _ _ =
 patMatchWHNF pat@(ViewP _ _) _ _ =
   pure $ PException $ "View pattern " ++ pprint pat ++ " is not supported"
 
-
 patMatch' :: Pat -> Exp -> Exp -> S.StateT Env IO PatternMatch
 patMatch' p exp orig = do
   env <- S.get
@@ -405,61 +528,6 @@ patMatch' p exp orig = do
     else do
       orig' <- step orig
       pure $ matched orig'
-
-processDecs :: Exp -> [Exp] -> [Dec] -> Bool -> StateExp
-processDecs hexp [exp1, exp2] [] False = pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
-processDecs hexp exps [] _ = do
-  let appE = makeAppE (hexp : exps)
-  env <- S.get
-  case appE of
-    Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
-    x -> pure x
-processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
-processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
-  if length exps /= length pats
-    then pure $ Exception $ "Wrong number of arguments in function " ++ pprint hexp
-    else do
-      exp' <- patsMatch hexp exps pats
-      changeOrContinue exp'
-  where
-    changeOrContinue :: PatternMatch -> StateExp
-    changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
-    changeOrContinue (PMatch rename) = do
-      env <- S.get
-      S.put $ insertDec (replaceDecs whereDec rename []) env
-      pure $ Value $ renameVars e rename
-    changeOrContinue (PStep v) = pure $ Value v
-    changeOrContinue (PException e) = pure $ Exception e
-
-processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ = pure $ Exception "Guards are not supported"
-
-processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
-  if notElem x (getNamesFromPats [pat])
-    then processDecs hexp [] decs b
-    else do
-      m <- patMatch pat e
-      changeOrContinue m
-  where
-    changeOrContinue :: PatternMatch -> StateExp
-    changeOrContinue PNomatch = processDecs hexp [] decs b
-    changeOrContinue (PMatch rename) = do
-      env <- S.get
-      S.put $ insertDec (replaceDecs whereDec rename []) env
-      env' <- S.get
-      case M.lookup x rename of
-        Just x' -> do
-          case getVar x' env' of
-            Just v -> pure $ Value $ renameVars v rename
-            Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
-        Nothing -> pure $ Exception $ "Variable " ++ pprint x ++ " is missing"
-    changeOrContinue (PStep v) = do
-      m <- patMatch pat e
-      changeOrContinue m
-    changeOrContinue (PException e) = pure $ Exception e
-
-processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ = pure $ Exception "Guards are not supported"
-
-processDecs hexp exps (ValD _ _ _ : decs) b = processDecs hexp exps decs b
 
 renameDecs :: [Dec] -> S.StateT Env IO (Dictionary Name, [Dec])
 renameDecs [] = pure (M.empty, [])
@@ -509,64 +577,4 @@ renameDecs (dec : decs) = do
       rename'' <- renamePat $ ListP xs
       pure $ M.union rename' rename''
     renamePat _ = pure M.empty
-
-evaluateExp :: Code Q a -> IO ()
-evaluateExp = flip evaluateExp' funcs . examineCode
-
-evaluateExp' :: Q (TExp a) -> Q [Dec] -> IO ()
-evaluateExp' tqexp qdec = do
-  te <- runQ tqexp
-  d <- runQ qdec
-  process (unType te) d
-  where
-    process :: Exp -> [Dec] -> IO ()
-    process e d = do
-      S.runStateT (nextStep (Value e) False) $ setDefaultDec d emptyEnv
-      return ()
-
-    niceOutputPrint :: StepExp Exp -> S.StateT Env IO ()
-    niceOutputPrint (Exception e) = fail e
-    niceOutputPrint None = liftIO $ putStrLn "Return value is none"
-    niceOutputPrint (Value e) = do
-      env <- S.get
-      liftIO $ putStrLn $ removeSpec $ pprint $ replaceVars e (getVars env)
-
-    nextStep :: StepExp Exp -> Bool -> StateExp
-    nextStep ene@(Value e) b = do
-      niceOutputPrint ene
-      liftIO $ putStrLn $ ""
-      if b
-        then do
-          ene1 <- step e
-          nextStep ene1 b
-        else askAndStep
-      where
-        askAndStep = do
-          liftIO $ putStr $ "Next action [N,a,q,h]? "
-          s <- liftIO getLine
-          let s' = if null s then "n" else s
-          case head s' of
-            'h' -> do
-              liftIO $ putStrLn "ghc-step-eval help: "
-              liftIO $ putStrLn "  n: print next step and ask again"
-              liftIO $ putStrLn "  a: print all following steps"
-              liftIO $ putStrLn "  q: quit the evaluation"
-              liftIO $ putStrLn "  h: print help"
-              liftIO $ putStrLn $ ""
-              askAndStep
-            'a' -> do
-              ene1 <- step e
-              nextStep ene1 True
-            'q' -> pure None
-            _   -> do
-              ene1 <- step e
-              nextStep ene1 False
-    nextStep None _ = do
-      liftIO $ putStrLn "Expression is fully evaluated."
-      pure None
-    nextStep (Exception e) _ = fail e
-
-
-    removeSpec :: String -> String
-    removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base."] . pack
 
