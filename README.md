@@ -12,7 +12,11 @@ Tool for the step-by-step evaluation of basic Haskell expressions.
 
 ## Usage
 
-Load the project to `GHCi` and set `TemplateHaskell` extension. 
+Load the project to `GHCi` and set `TemplateHaskell` extension:
+
+```bash
+$ ghci -XTemplaceHaskell step-eval.hs
+```
 
 For evaluation of expression use function `evaluateExp` and the only argument is typed quoted expression. For instance `evaluateExp [|| map id [1, 2] ||]`
 
