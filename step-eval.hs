@@ -10,7 +10,7 @@ import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Data.Maybe ( isNothing )
 import Data.List ( isSubsequenceOf )
-import Prelude hiding ( id, const, take, map, filter, last, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
+import Prelude hiding ( id, const, take, drop, map, filter, head, tail, last, init, null, length, fst, snd, zip, zipWith, (&&), (||), not, takeWhile, dropWhile, elem, notElem, enumFrom, enumFromThen, enumFromTo, enumFromThenTo )
 import Data.Text (pack, unpack, replace)
 import Language.Haskell.Interpreter
 import qualified Control.Monad.Trans.State as S

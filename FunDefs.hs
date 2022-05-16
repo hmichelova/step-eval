@@ -17,6 +17,10 @@ funcs = [d|
   take _ [] = []
   take n (x : xs) = if n < 0 then [] else x : take (n - 1) xs
 
+  drop :: Int -> [a] -> [a]
+  drop _ [] = []
+  drop n (x : xs) = if n <= 0 then (x : xs) else drop (n - 1) xs
+
   map :: (a -> b) -> [a] -> [b]
   map _ []       = []
   map f (x : xs) = f x : map f xs
@@ -27,9 +31,23 @@ funcs = [d|
     then x : filter p xs
     else filter p xs
 
+  head :: [a] -> a
+  head (x : _) = x
+
+  tail :: [a] -> [a]
+  tail (_ : xs) = xs
+
   last :: [a] -> a
   last [x] = x
   last (x : xs) = last xs
+
+  init :: [a] -> [a]
+  init [x] = []
+  init (x : xs) = x : init xs
+
+  null :: [a] -> Bool
+  null [] = True
+  null _ = False
 
   length :: [a] -> Int
   length [] = 0
@@ -82,6 +100,14 @@ funcs = [d|
   dropWhile p xs@(x : xs') = if p x
     then dropWhile p xs'
     else xs
+
+  elem :: Eq a => a -> [a] -> Bool
+  elem _ [] = False
+  elem x (y : ys) = x == y || elem x ys
+
+  notElem :: Eq a => a -> [a] -> Bool
+  notElem _ [] = True
+  notElem x (y : ys) = x /= y && notElem x ys
 
   enumFrom :: Enum a => a -> [a]
   enumFrom n = n : enumFrom (succ n)
