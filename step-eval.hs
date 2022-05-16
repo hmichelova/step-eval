@@ -120,23 +120,13 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
           processDecs hexp exps decs False
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
-      enexp' <- step exp
-      case enexp' of
-        Exception e -> pure $ Exception e
-        None -> pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
-        Value exp' -> pure $ makeAppE (exp' : makeListArgsInfixE me1 me2 e ++ exps)
+      pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
       where
         substituteNothingInInfixE :: Exp -> Exp -> StepExp Exp
         substituteNothingInInfixE ie@(InfixE me1 exp me2) e
           | isNothing me1 = Value $ InfixE (Just e) exp me2
           | isNothing me2 = Value $ InfixE me1 exp (Just e)
-          | otherwise     = Exception ("Infix expression `" ++ show (pprint ie) ++ "` have all arguments - application is not allowed")
-
-        makeListArgsInfixE :: Maybe Exp -> Maybe Exp -> Exp -> [Exp]
-        makeListArgsInfixE Nothing Nothing e = [e]
-        makeListArgsInfixE Nothing (Just e2) e = [e, e2]
-        makeListArgsInfixE (Just e1) Nothing e = [e1, e]
-        makeListArgsInfixE (Just e1) (Just e2) e = [e1, e2, e]
+          | otherwise     = Exception $ "Infix expression `" ++ show (pprint ie) ++ "` is not operator section with argument " ++ show (pprint e)
 
     applyExp (LamE [] exp) [] = step exp
     applyExp e@(LamE [] _) exps = pure $ Exception $
@@ -165,28 +155,26 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
     replaceAtIndex :: Int -> StepExp Exp -> [Exp] -> [Exp]
     replaceAtIndex i (Value x) xs = take i xs ++ [x] ++ drop (i + 1) xs
 
-step ie@(InfixE me1 exp me2) = do
+step ie@(InfixE me1@(Just e1) exp me2@(Just e2)) = do
   enexp' <- step exp
   case enexp' of
     Exception e -> pure $ Exception e
     None -> do
-      eie1' <- stepMaybe me1
-      case eie1' of
+      e1' <- step e1
+      case e1' of
         Exception e -> pure $ Exception e
         None -> do
-          eie2' <- stepMaybe me2
-          case eie2' of
+          e2' <- step e2
+          case e2' of
             Exception e -> pure $ Exception e
-            None -> if isNothing me1 || isNothing me2
-              then pure None
-              else do
-                list <- joinList ie
-                case list of
-                  None -> evaluateInfixE ie
-                  x -> pure x
-            Value e2' -> pure $ Value $ InfixE me1 exp (Just e2')
-        Value e1' -> pure $ Value $ InfixE (Just e1') exp me2
-    Value exp' -> pure $ Value $ InfixE me1 exp' me2 -- TODO fix?
+            None -> do
+              list <- joinList ie
+              case list of
+                None -> evaluateInfixE ie
+                x -> pure x
+            Value exp2' -> pure $ Value $ InfixE me1 exp (Just exp2')
+        Value exp1' -> pure $ Value $ InfixE (Just exp1') exp me2
+    Value exp' -> pure $ Value $ InfixE me1 exp' me2
   where
     joinList :: Exp -> StateExp
     joinList (VarE x) = do
@@ -211,6 +199,7 @@ step ie@(InfixE me1 exp me2) = do
     evaluateInfixE ei = do
       env <- S.get
       liftIO $ evalInterpreter $ replaceVars ie (getVars env)
+step ie@(InfixE _ _ _) = pure None
 
 step (ParensE e) = do
   e' <- step e
