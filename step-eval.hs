@@ -100,7 +100,7 @@ step (VarE x) = do
       if null decs
         then pure None
         else do
-          exp' <- processDecs (VarE x) [] decs False
+          exp' <- processDecs (VarE x) [] decs
           case exp' of
             Value v -> do
               S.put $ insertVar x v env
@@ -132,7 +132,7 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
         Just v -> applyExp v exps
         Nothing -> do
           let decs = getDecs x False env
-          processDecs hexp exps decs False
+          processDecs hexp exps decs
     applyExp e@(InfixE _ _ _) [] = pure $ Exception $ "Function application `" ++ show (pprint e) ++ "` has no arguments"
     applyExp ie@(InfixE me1 exp me2) (e : exps) = do
       pure $ substituteNothingInInfixE ie e >>= \ie' -> makeAppE (ie' : exps)
@@ -210,7 +210,7 @@ step ie@(InfixE me1@(Just e1) exp me2@(Just e2)) = do
     evaluateInfixE (InfixE (Just e1) (VarE x) (Just e2)) = do
       env <- S.get
       let decs = getDecs x False env
-      processDecs exp [e1, e2] decs True
+      processDecs exp [e1, e2] decs
     evaluateInfixE ei = do
       env <- S.get
       liftIO $ evalInterpreter $ replaceVars ie (getVars env)
@@ -350,17 +350,15 @@ evalInterpreter e = do
 
 -- pattern matching --
 
-processDecs :: Exp -> [Exp] -> [Dec] -> Bool -> StateExp
-processDecs hexp [exp1, exp2] [] False =
-  pure $ Value $ AppE (InfixE (Just exp1) hexp Nothing) exp2
-processDecs hexp exps [] _ = do
+processDecs :: Exp -> [Exp] -> [Dec] -> StateExp
+processDecs hexp exps [] = do
   let appE = makeAppE (hexp : exps)
   env <- S.get
   case appE of
     Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
     x -> pure x
-processDecs hexp exps (FunD n [] : decs) b = processDecs hexp exps decs b
-processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) b = do
+processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
+processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) = do
   if length exps /= length pats
     then pure $ Exception $ "Wrong number of arguments in function " ++ pprint hexp
     else do
@@ -368,7 +366,7 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
       changeOrContinue exp'
   where
     changeOrContinue :: PatternMatch -> StateExp
-    changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs) b
+    changeOrContinue PNomatch = processDecs hexp exps ((FunD n clauses) : decs)
     changeOrContinue (PMatch rename) = do
       env <- S.get
       S.put $ insertDec (replaceDecs whereDec rename []) env
@@ -376,18 +374,18 @@ processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : dec
     changeOrContinue (PStep v) = pure $ Value v
     changeOrContinue (PException e) = pure $ Exception e
 
-processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) _ =
+processDecs hexp exps (FunD n (Clause pats (GuardedB gb) _ : clauses) : decs) =
   pure $ Exception "Guards are not supported"
 
-processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
+processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) =
   if notElem x (getNamesFromPats [pat])
-    then processDecs hexp [] decs b
+    then processDecs hexp [] decs
     else do
       m <- patMatch pat e
       changeOrContinue m
   where
     changeOrContinue :: PatternMatch -> StateExp
-    changeOrContinue PNomatch = processDecs hexp [] decs b
+    changeOrContinue PNomatch = processDecs hexp [] decs
     changeOrContinue (PMatch rename) = do
       env <- S.get
       S.put $ insertDec (replaceDecs whereDec rename []) env
@@ -403,10 +401,10 @@ processDecs hexp@(VarE x) [] (ValD pat (NormalB e) whereDec : decs) b =
       changeOrContinue m
     changeOrContinue (PException e) = pure $ Exception e
 
-processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) _ =
+processDecs hexp exps (ValD pat (GuardedB gb) whereDecs : decs) =
   pure $ Exception "Guards are not supported"
 
-processDecs hexp exps (ValD _ _ _ : decs) b = processDecs hexp exps decs b
+processDecs hexp exps (ValD _ _ _ : decs) = processDecs hexp exps decs
 
 patsMatch :: Exp -> [Exp] -> [Pat] -> S.StateT Env IO PatternMatch
 patsMatch hexp (e : exps) (p : pats) = do
