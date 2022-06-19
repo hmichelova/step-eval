@@ -7,7 +7,7 @@ import qualified Data.Map as M
 import DataTypes
 
 getDecs :: Name -> Bool -> Env -> [Dec]
-getDecs n@(Name (OccName on) _) sign (Env _ c d) = if null custom
+getDecs n@(Name (OccName on) _) sign (Env _ c d _) = if null custom
   then filter sameOccName d
   else custom
   where

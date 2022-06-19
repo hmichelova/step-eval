@@ -39,11 +39,14 @@ evaluateExp' tqexp qdec = do
     niceOutputPrint None = liftIO $ putStrLn "Return value is none"
     niceOutputPrint (Value e) = do
       env <- S.get
-      liftIO $ putStrLn $ removeUnderscore $ removeSpec $ pprint $ replaceVars e (getVars env)
+      liftIO $ putStrLn $ printChange env
+      liftIO $ putStrLn $ nicePprint e env
 
     nextStep :: StepExp Exp -> Bool -> StateExp
     nextStep ene@(Value e) b = do
       niceOutputPrint ene
+      env <- S.get
+      S.put $ removeChange env
       liftIO $ putStrLn $ ""
       if b
         then do
@@ -76,7 +79,15 @@ evaluateExp' tqexp qdec = do
       pure None
     nextStep (Exception e) _ = fail e
 
+nicePprintDec :: [Dec] -> String
+nicePprintDec dec = nicePprintS $ pprint dec
 
+nicePprint :: Exp -> Env -> String
+nicePprint e env = nicePprintS $ pprint $ replaceVars e (getVars env)
+
+nicePprintS :: String -> String
+nicePprintS s = removeUnderscore $ removeSpec $ s
+  where
     removeSpec :: String -> String
     removeSpec =  unpack . flip (foldl (\s needle -> replace needle "" s)) ["GHC.Types.", "Step_eval.", "GHC.Num.", "GHC.Classes.", "GHC.List.", "GHC.Err.", "GHC.Enum.", "GHC.Base.", "GHC.Float.", "GHC.Real."] . pack
 
@@ -100,7 +111,8 @@ step (VarE x) = do
         None -> pure None
         Value v -> do
           env' <- S.get
-          S.put $ updateOrInsertVar x v env'
+          let env'' = insertChange env' Change ("{ " ++ nicePprint exp env' ++ " }")
+          S.put $ updateOrInsertVar x v env''
           pure $ Value $ (VarE x)
     Nothing -> do
       let decs = getDecs x False env
@@ -110,7 +122,8 @@ step (VarE x) = do
           exp' <- processDecs (VarE x) [] decs
           case exp' of
             Value v -> do
-              S.put $ insertVar x v env
+              let env' = insertChange env Change ("{ " ++ nicePprint (VarE x) env ++ " }")
+              S.put $ insertVar x v env'
               pure $ Value $ VarE x
             Exception e -> if e == "Wrong number of arguments in function " ++ pprint (VarE x)
               then pure None
@@ -126,7 +139,10 @@ step exp@(AppE exp1 exp2) = let (hexp : exps) = getSubExp exp1 ++ [exp2] in do
   case hexp' of
     Exception e -> pure $ Exception e
     None -> applyExp hexp exps
-    Value v -> pure $ makeAppE (v : exps)
+    Value v -> do
+      env <- S.get
+      S.put $ insertChange env Change $ nicePprint (fromValue $ makeAppE $ (LitE (StringL ("{ " ++ nicePprint hexp env ++ " }"))) : exps) env
+      pure $ makeAppE (v : exps)
   where
     getSubExp :: Exp -> [Exp]
     getSubExp (AppE exp1 exp2) = getSubExp exp1 ++ [exp2]
@@ -244,20 +260,28 @@ step (CondE b t f) = do
   b' <- step b
   case b' of
     Exception e -> pure $ Exception e
-    None -> case b of
-      ConE (Name (OccName n) _) -> pure $ Value $ if n == "True" then t else f
-      VarE x -> do
-        env <- S.get
-        case getVar x env of
-          Just (ConE (Name (OccName n) _)) -> pure $ Value $ if n == "True" then t else f
-          otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
-      otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
-    Value v -> pure $ Value $ CondE v t f
+    None -> do
+      env <- S.get
+      S.put $ insertChange env Change $ "{ " ++ nicePprint (CondE b t f) env ++ " }"
+      case b of
+        ConE (Name (OccName n) _) -> pure $ Value $ if n == "True" then t else f
+        VarE x -> do
+          env <- S.get
+          case getVar x env of
+            Just (ConE (Name (OccName n) _)) -> pure $ Value $ if n == "True" then t else f
+            otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
+        otherwise -> pure $ Exception $ "Condition `" ++ pprint b ++ "` can't be evaluate to Bool expression"
+    Value v -> do
+      env <- S.get
+      let s = getChangeString env
+      S.put $ insertChange env Change $ "if " ++ s ++ " then " ++ nicePprint t env ++ " else " ++ nicePprint f env
+      pure $ Value $ CondE v t f
 
 step (LetE decs exp) = do
   env <- S.get
   (rename, decs') <- renameDecs decs
-  S.put $ insertDec decs' env
+  let env' = insertChange env Change $ "let { " ++ nicePprintDec decs ++ " } in " ++ nicePprint exp env
+  S.put $ insertDec decs' env'
   pure $ Value $ renameVars exp rename
 
 step (ListE []) = pure None
@@ -353,12 +377,18 @@ processDecs hexp exps [] = do
   exps' <- stepExps exps
   case exps' of
     Exception e -> pure $ Exception e
-    Value (ListE xs) -> pure $ makeAppE (hexp : xs)
+    Value (ListE xs) -> do
+      env <- S.get
+      let s = getChangeString env
+      S.put $ insertChange env Change $ nicePprint hexp env ++ " " ++ s
+      pure $ makeAppE (hexp : xs)
     None -> do
       let appE = makeAppE (hexp : exps)
       env <- S.get
       case appE of
-        Value v -> liftIO $ evalInterpreter $ replaceVars v (getVars env)
+        Value v -> do
+          S.put $ insertChange env Change $ "{ " ++ (nicePprint (fromValue $ makeAppE (hexp : exps)) env) ++ " }"
+          liftIO $ evalInterpreter $ replaceVars v (getVars env)
         x -> pure x
   where
     stepExps :: [Exp] -> StateExp
@@ -367,12 +397,20 @@ processDecs hexp exps [] = do
       exp' <- step exp
       case exp' of
         Exception e -> pure $ Exception e
-        Value e -> pure $ Value $ ListE $ e : exps
+        Value e -> do
+          env <- S.get
+          S.put $ insertChange env Change $ nicePprint (fromValue $ makeAppE (LitE (StringL ("{ " ++ nicePprint exp env ++ " }")) : exps)) env
+          pure $ Value $ ListE $ e : exps
         None -> do
           exps' <- stepExps exps
           case exps' of
-            Value (ListE xs) -> pure $ Value $ ListE $ exp : xs
+            Value (ListE xs) -> do
+              env <- S.get
+              let s = getChangeString env
+              S.put $ insertChange env Change $ nicePprint exp env ++ " " ++ s
+              pure $ Value $ ListE $ exp : xs
             x -> pure x
+
 processDecs hexp exps (FunD n [] : decs) = processDecs hexp exps decs
 processDecs hexp exps (FunD n (Clause pats (NormalB e) whereDec : clauses) : decs) = do
   if length exps /= length pats
